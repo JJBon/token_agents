@@ -3,6 +3,9 @@ FROM public.ecr.aws/emr-serverless/spark/emr-7.5.0:20250425
 USER root
 ENV PYSPARK_PYTHON=/usr/bin/python3.11
 
+RUN yum install -y iputils
+RUN yum install -y git
+
 # Update and install required tools
 RUN yum update -y && yum install -y wget
 
@@ -29,6 +32,8 @@ COPY ./docker/spark/spark-utils/requirements.txt requirements.txt
 RUN /usr/bin/python3.11 -m pip install --no-cache-dir --ignore-installed -r requirements.txt 
 RUN /usr/bin/python3.11 -m pip install --force-reinstall dbt-adapters
 
+COPY ./docker/spark/spark-utils/adapter_backed_client.py  /usr/local/lib/python3.11/site-packages/dbt_metricflow/cli/dbt_connectors/adapter_backed_client.py 
+
 
 # Copy dbt files and create necessary directories
 COPY ./dbt/coin_spark /var/lib/spark/coin_spark
@@ -39,8 +44,6 @@ COPY ./dbt/profiles.yml /var/lib/spark/.dbt/.
 WORKDIR /var/lib/spark/coin_spark
 ENV DBT_PROFILES_DIR=/var/lib/spark/.dbt
 
-RUN yum install -y iputils
-RUN yum install -y git
 
 # Install dbt dependencies
 RUN dbt clean
