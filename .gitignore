@@ -5,3 +5,4 @@ env
 *.hcl
 *.tfstate
 *.backup
+dbt/coin_spark/logs
