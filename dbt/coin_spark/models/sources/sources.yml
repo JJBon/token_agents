@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: coingecko
+    schema: coingecko
+    tables:
+      - name: jj_coingecko_data_pipeline
+        description: "Raw ingested Coingecko data"

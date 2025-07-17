@@ -1,0 +1,189 @@
+version: 2
+
+semantic_models:
+  - name: coingecko_raw_semantic
+    description: "CoinGecko historical snapshot data."
+    model: ref('coin_data')
+    defaults:
+      agg_time_dimension: inserted_at
+    entities:
+      - name: token_day
+        expr: "concat(coin_name, '_', cast(inserted_at as varchar))"
+        type: primary
+    dimensions:
+      - name: inserted_at
+        type: time
+        expr: inserted_at
+        type_params:
+          time_granularity: day
+      - name: coin_name
+        type: categorical
+      - name: symbol
+        type: categorical
+      - name: ds
+        type: categorical
+      - name: market_cap_usd_bucket
+        type: categorical
+        expr: market_cap_usd_bucket
+    measures:
+      - name: current_price_usd
+        agg: average
+        expr: current_price
+        description: "Average current price in USD"
+      - name: market_cap_usd
+        agg: average
+        expr: market_cap
+        description: "Average market cap in USD"
+      - name: current_price_usd_sq
+        agg: average
+        expr: power(current_price, 2)
+        description: "Average squared current price in USD"
+      - name: market_cap_usd_sq
+        agg: average
+        expr: power(market_cap, 2)
+        description: "Average squared market cap in USD"
+
+metrics:
+  - name: average_price_usd
+    description: "Average price (USD)"
+    type: simple
+    label: "Average Price (USD)"
+    type_params:
+      measure: current_price_usd
+
+  - name: average_price_usd_sq
+    description: "Average squared price (USD²)"
+    type: simple
+    label: "Average Squared Price (USD²)"
+    type_params:
+      measure: current_price_usd_sq
+
+  - name: average_market_cap_usd
+    description: "Average Market Cap (USD)"
+    type: simple
+    label: "Average Market Cap (USD)"
+    type_params:
+      measure: market_cap_usd
+
+  - name: average_market_cap_usd_sq
+    description: "Average Squared Market Cap (USD²)"
+    type: simple
+    label: "Average Squared Market Cap (USD²)"
+    type_params:
+      measure: market_cap_usd_sq
+
+  - name: price_variance
+    description: "Variance of price in USD"
+    type: derived
+    label: "Price Variance (USD)"
+    type_params:
+      expr: average_price_usd_sq - (average_price_usd * average_price_usd)
+      metrics:
+        - name: average_price_usd_sq
+        - name: average_price_usd
+
+  - name: market_cap_variance
+    description: "Variance of market cap in USD"
+    type: derived
+    label: "Market Cap Variance (USD)"
+    type_params:
+      expr: average_market_cap_usd_sq - (average_market_cap_usd * average_market_cap_usd)
+      metrics:
+        - name: average_market_cap_usd_sq
+        - name: average_market_cap_usd
+
+  - name: price_volatility
+    description: "Coefficient of variation (volatility) for price"
+    type: derived
+    label: "Price Volatility (CV)"
+    type_params:
+      expr: "sqrt(greatest(0, price_variance)) / average_price_usd"
+      metrics:
+        - name: price_variance
+        - name: average_price_usd
+
+  - name: market_cap_volatility
+    description: "Coefficient of variation (volatility) for market cap"
+    type: derived
+    label: "Market Cap Volatility (CV)"
+    type_params:
+      expr: "IF(average_market_cap_usd = 0 OR average_market_cap_usd IS NULL, 0, sqrt(greatest(market_cap_variance, 0)) / average_market_cap_usd)"
+      metrics:
+        - name: market_cap_variance
+        - name: average_market_cap_usd
+
+  - name: price_moving_average_7d
+    description: "7-day moving average of price"
+    type: cumulative
+    label: "Price Moving Average (7d)"
+    type_params:
+      measure: current_price_usd
+      window: 7 days
+
+  - name: first_market_cap_usd
+    description: "First market cap value (USD) over the window"
+    type: cumulative
+    label: "First Market Cap (USD)"
+    type_params:
+      cumulative_type_params:
+        period_agg: first
+      measure:
+        name: market_cap_usd
+        fill_nulls_with: 0
+        join_to_timespine: true
+
+  - name: last_market_cap_usd
+    description: "Last market cap value (USD) over the window"
+    type: cumulative
+    label: "Last Market Cap (USD)"
+    type_params:
+      cumulative_type_params:
+        period_agg: last
+      measure:
+        name: market_cap_usd
+        fill_nulls_with: 0
+        join_to_timespine: true
+
+  - name: market_cap_growth_rate
+    description: "Market Cap Growth Rate (%)"
+    type: derived
+    label: "Market Cap Growth Rate (%)"
+    type_params:
+      expr: "IF(first_market_cap_usd = 0 OR first_market_cap_usd IS NULL, 0, (last_market_cap_usd - first_market_cap_usd) / first_market_cap_usd * 100)"
+      metrics:
+        - name: first_market_cap_usd
+        - name: last_market_cap_usd
+
+  - name: first_price_usd
+    description: "First price value (USD) over the window"
+    type: cumulative
+    label: "First Price (USD)"
+    type_params:
+      cumulative_type_params:
+        period_agg: first
+      measure:
+        name: current_price_usd
+        fill_nulls_with: 0
+        join_to_timespine: true
+
+  - name: last_price_usd
+    description: "Last price value (USD) over the window"
+    type: cumulative
+    label: "Last Price (USD)"
+    type_params:
+      cumulative_type_params:
+        period_agg: last
+      measure:
+        name: current_price_usd
+        fill_nulls_with: 0
+        join_to_timespine: true
+
+  - name: price_growth_rate
+    description: "Price Growth Rate (%)"
+    type: derived
+    label: "Price Growth Rate (%)"
+    type_params:
+      expr: "IF(first_price_usd = 0 OR first_price_usd IS NULL, 0, (last_price_usd - first_price_usd) / first_price_usd * 100)"
+      metrics:
+        - name: first_price_usd
+        - name: last_price_usd

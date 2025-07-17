@@ -1,0 +1,19 @@
+services:
+  spark-master:
+    #platform: ${BUILD_ARCH}
+    stdin_open: true
+    tty: true 
+    build: 
+      context: ../..
+      dockerfile: ./docker/spark/local/Dockerfile
+    volumes:
+        - ../../dbt/coin_spark:/var/lib/spark/coin_spark
+        - ../../dbt/profiles.yml:/var/lib/spark/.dbt/profiles.yml
+        - ../../docker/spark/spark-utils/start-thrift-server.sh:/spark_utils/start-thrift-server.sh
+        - ../../docker/spark/spark-utils/hive-site.xml:/etc/spark/conf/hive-site.xml
+    container_name: spark-master
+    entrypoint: /bin/sh
+    env_file:
+      - ../../env/.env_dev
+    ports:
+      - 10001:10001
