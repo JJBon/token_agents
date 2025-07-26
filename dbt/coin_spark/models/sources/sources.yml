@@ -2,7 +2,7 @@ version: 2
 
 sources:
   - name: coingecko
-    schema: coingecko
+    schema: agentic
     tables:
-      - name: jj_coingecko_data_pipeline
+      - name: raw_data
         description: "Raw ingested Coingecko data"

@@ -1,4 +1,4 @@
-{{ config(materialized = 'table', file_format='parquet', location_root='s3://jj-coingecko-data-pipeline/dbt/time_spines') }}
+{{ config(materialized = 'table', file_format='parquet') }}
 
 with base_dates as (
   {{ dbt.date_spine(

@@ -14,11 +14,12 @@ select name,
         low_24h,
         roi,
         inserted_at,
-        ds,
         case
         when market_cap < 50000000 then 'Very Low Cap'
         when market_cap < 500000000 then 'Low Cap'
         when market_cap < 5000000000 then 'Mid Cap'
         else 'High Cap'
-        end as market_cap_usd_bucket
-        FROM {{ source('coingecko', 'jj_coingecko_data_pipeline') }}
+        end as market_cap_usd_bucket,
+        DATE_TRUNC('week',inserted_at) as week_start,
+        weekofyear(inserted_at) as week_number
+        FROM {{ source('coingecko', 'raw_data') }}

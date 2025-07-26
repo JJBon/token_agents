@@ -1,0 +1,143 @@
+:: loading settings :: url = jar:file:/usr/lib/spark/jars/ivy-2.5.1.jar!/org/apache/ivy/core/settings/ivysettings.xml
+Ivy Default Cache set to: /home/hadoop/.ivy2/cache
+The jars for the packages stored in: /home/hadoop/.ivy2/jars
+org.apache.iceberg#iceberg-spark-runtime-3.5_2.12 added as a dependency
+software.amazon.glue#glue-extensions-for-iceberg-spark-runtime-3.5_2.12 added as a dependency
+:: resolving dependencies :: org.apache.spark#spark-submit-parent-b3ea24e9-ea84-4569-b0a9-c4ab00696535;1.0
+	confs: [default]
+	found org.apache.iceberg#iceberg-spark-runtime-3.5_2.12;1.6.1 in central
+	found software.amazon.glue#glue-extensions-for-iceberg-spark-runtime-3.5_2.12;0.3.0 in central
+downloading https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.6.1/iceberg-spark-runtime-3.5_2.12-1.6.1.jar ...
+	[SUCCESSFUL ] org.apache.iceberg#iceberg-spark-runtime-3.5_2.12;1.6.1!iceberg-spark-runtime-3.5_2.12.jar (3718ms)
+downloading https://repo1.maven.org/maven2/software/amazon/glue/glue-extensions-for-iceberg-spark-runtime-3.5_2.12/0.3.0/glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar ...
+	[SUCCESSFUL ] software.amazon.glue#glue-extensions-for-iceberg-spark-runtime-3.5_2.12;0.3.0!glue-extensions-for-iceberg-spark-runtime-3.5_2.12.jar (305ms)
+:: resolution report :: resolve 1279ms :: artifacts dl 4026ms
+	:: modules in use:
+	org.apache.iceberg#iceberg-spark-runtime-3.5_2.12;1.6.1 from central in [default]
+	software.amazon.glue#glue-extensions-for-iceberg-spark-runtime-3.5_2.12;0.3.0 from central in [default]
+	---------------------------------------------------------------------
+	|                  |            modules            ||   artifacts   |
+	|       conf       | number| search|dwnlded|evicted|| number|dwnlded|
+	---------------------------------------------------------------------
+	|      default     |   2   |   2   |   2   |   0   ||   2   |   2   |
+	---------------------------------------------------------------------
+:: retrieving :: org.apache.spark#spark-submit-parent-b3ea24e9-ea84-4569-b0a9-c4ab00696535
+	confs: [default]
+	2 artifacts copied, 0 already retrieved (42651kB/86ms)
+25/07/20 15:46:33 INFO HiveThriftServer2: Started daemon with process name: 14@26d25fff1433
+25/07/20 15:46:33 INFO SignalUtils: Registering signal handler for TERM
+25/07/20 15:46:33 INFO SignalUtils: Registering signal handler for HUP
+25/07/20 15:46:33 INFO SignalUtils: Registering signal handler for INT
+25/07/20 15:46:33 INFO HiveThriftServer2: Starting SparkContext
+25/07/20 15:46:33 INFO HiveConf: Found configuration file file:/etc/spark/conf/hive-site.xml
+25/07/20 15:46:33 INFO EMRParamSideChannel: Setting FGAC mode to false
+25/07/20 15:46:33 INFO SparkContext: Running Spark version 3.5.2-amzn-1
+25/07/20 15:46:33 INFO SparkContext: OS info Linux, 6.10.14-linuxkit, aarch64
+25/07/20 15:46:33 INFO SparkContext: Java version 17.0.15
+25/07/20 15:46:33 INFO ResourceUtils: ==============================================================
+25/07/20 15:46:33 INFO ResourceUtils: No custom resources configured for spark.driver.
+25/07/20 15:46:33 INFO ResourceUtils: ==============================================================
+25/07/20 15:46:33 INFO SparkContext: Submitted application: SparkSQL::172.19.0.4
+25/07/20 15:46:33 INFO ResourceProfile: Default ResourceProfile created, executor resources: Map(executorType -> name: executorType, amount: 1, script: , vendor: , cores -> name: cores, amount: 4, script: , vendor: , memory -> name: memory, amount: 14336, script: , vendor: , offHeap -> name: offHeap, amount: 0, script: , vendor: ), task resources: Map(cpus -> name: cpus, amount: 1.0)
+25/07/20 15:46:33 INFO ResourceProfile: Limiting resource is cpus at 4 tasks per executor
+25/07/20 15:46:33 INFO ResourceProfileManager: Added ResourceProfile id: 0
+25/07/20 15:46:33 INFO ResourceProfile: User executor ResourceProfile created, executor resources: Map(executorType -> name: executorType, amount: 1, script: , vendor: , cores -> name: cores, amount: 4, script: , vendor: , memory -> name: memory, amount: 14336, script: , vendor: , offHeap -> name: offHeap, amount: 0, script: , vendor: ), task resources: Map(cpus -> name: cpus, amount: 1.0)
+25/07/20 15:46:33 INFO ResourceProfile: Limiting resource is cpus at 4 tasks per executor
+25/07/20 15:46:33 INFO ResourceProfileManager: Added ResourceProfile id: 1
+25/07/20 15:46:34 INFO SecurityManager: Changing view acls to: hadoop
+25/07/20 15:46:34 INFO SecurityManager: Changing modify acls to: hadoop
+25/07/20 15:46:34 INFO SecurityManager: Changing view acls groups to: 
+25/07/20 15:46:34 INFO SecurityManager: Changing modify acls groups to: 
+25/07/20 15:46:34 INFO SecurityManager: SecurityManager: authentication enabled; ui acls disabled; users with view permissions: hadoop; groups with view permissions: EMPTY; users with modify permissions: hadoop; groups with modify permissions: EMPTY
+25/07/20 15:46:34 INFO Utils: Successfully started service 'sparkDriver' on port 37477.
+25/07/20 15:46:34 INFO SparkEnv: Registering MapOutputTracker
+25/07/20 15:46:34 INFO SparkEnv: Registering BlockManagerMaster
+25/07/20 15:46:34 INFO BlockManagerMasterEndpoint: Using org.apache.spark.storage.DefaultTopologyMapper for getting topology information
+25/07/20 15:46:34 INFO BlockManagerMasterEndpoint: BlockManagerMasterEndpoint up
+25/07/20 15:46:34 INFO SparkEnv: Registering BlockManagerMasterHeartbeat
+25/07/20 15:46:34 INFO DiskBlockManager: Created local directory at /tmp/blockmgr-fd4fa466-cfbf-4308-ab36-8be8960320b7
+25/07/20 15:46:34 INFO MemoryStore: MemoryStore started with capacity 4.6 GiB
+25/07/20 15:46:34 INFO SparkEnv: Registering OutputCommitCoordinator
+25/07/20 15:46:34 INFO SubResultCacheManager: Sub-result caches are disabled.
+25/07/20 15:46:34 INFO SparkContext: Added JAR file:///home/hadoop/.ivy2/jars/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar at spark://26d25fff1433:37477/jars/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar with timestamp 1753026393961
+25/07/20 15:46:34 INFO SparkContext: Added JAR file:///home/hadoop/.ivy2/jars/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar at spark://26d25fff1433:37477/jars/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar with timestamp 1753026393961
+25/07/20 15:46:34 INFO SparkContext: Added file file:///home/hadoop/.ivy2/jars/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar at file:///home/hadoop/.ivy2/jars/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar with timestamp 1753026393961
+25/07/20 15:46:34 INFO Utils: Copying /home/hadoop/.ivy2/jars/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar to /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar
+25/07/20 15:46:34 INFO SparkContext: Added file file:///home/hadoop/.ivy2/jars/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar at file:///home/hadoop/.ivy2/jars/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar with timestamp 1753026393961
+25/07/20 15:46:34 INFO Utils: Copying /home/hadoop/.ivy2/jars/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar to /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar
+25/07/20 15:46:34 INFO Executor: Starting executor ID driver on host 26d25fff1433
+25/07/20 15:46:34 INFO Executor: OS info Linux, 6.10.14-linuxkit, aarch64
+25/07/20 15:46:34 INFO Executor: Java version 17.0.15
+25/07/20 15:46:34 INFO Executor: Starting executor with user classpath (userClassPathFirst = false): 'file:/usr/lib/hadoop-lzo/lib/*,file:/usr/lib/hadoop/hadoop-aws.jar,file:/usr/share/aws/aws-java-sdk/*,file:/usr/share/aws/emr/emrfs/conf/,file:/usr/share/aws/emr/emrfs/lib/*,file:/usr/share/aws/emr/emrfs/auxlib/*,file:/usr/share/aws/emr/goodies/lib/emr-spark-goodies.jar,file:/usr/share/aws/emr/goodies/lib/emr-serverless-spark-goodies.jar,file:/usr/share/aws/emr/security/conf,file:/usr/share/aws/emr/security/lib/*,file:/usr/share/aws/hmclient/lib/aws-glue-datacatalog-spark-client.jar,file:/usr/share/java/Hive-JSON-Serde/hive-openx-serde.jar,file:/usr/share/aws/sagemaker-spark-sdk/lib/sagemaker-spark-sdk.jar,file:/usr/share/aws/emr/s3select/lib/emr-s3-select-spark-connector.jar,file:/docker/usr/lib/hadoop-lzo/lib/*,file:/docker/usr/lib/hadoop/hadoop-aws.jar,file:/docker/usr/share/aws/aws-java-sdk/*,file:/docker/usr/share/aws/emr/emrfs/conf,file:/docker/usr/share/aws/emr/emrfs/lib/*,file:/docker/usr/share/aws/emr/emrfs/auxlib/*,file:/docker/usr/share/aws/emr/goodies/lib/emr-spark-goodies.jar,file:/docker/usr/share/aws/emr/security/conf,file:/docker/usr/share/aws/emr/security/lib/*,file:/docker/usr/share/aws/hmclient/lib/aws-glue-datacatalog-spark-client.jar,file:/docker/usr/share/java/Hive-JSON-Serde/hive-openx-serde.jar,file:/docker/usr/share/aws/sagemaker-spark-sdk/lib/sagemaker-spark-sdk.jar,file:/docker/usr/share/aws/emr/s3select/lib/emr-s3-select-spark-connector.jar,file:/usr/share/aws/redshift/jdbc/RedshiftJDBC.jar,file:/usr/share/aws/redshift/spark-redshift/lib/*,file:/usr/share/aws/iceberg/lib/iceberg-emr-common.jar,file:/usr/share/aws/iceberg/lib/iceberg-spark3-runtime.jar,file:/var/lib/spark/coin_spark/emr-s3-select-spark-connector.jar,file:/var/lib/spark/coin_spark/RedshiftJDBC.jar,file:/var/lib/spark/coin_spark/emr-spark-goodies.jar,file:/var/lib/spark/coin_spark/conf,file:/var/lib/spark/coin_spark/iceberg-spark3-runtime.jar,file:/var/lib/spark/coin_spark/hadoop-aws.jar,file:/var/lib/spark/coin_spark/*,file:/var/lib/spark/coin_spark/iceberg-emr-common.jar,file:/var/lib/spark/coin_spark/aws-glue-datacatalog-spark-client.jar,file:/var/lib/spark/coin_spark/emr-serverless-spark-goodies.jar,file:/var/lib/spark/coin_spark/hive-openx-serde.jar,file:/var/lib/spark/coin_spark/sagemaker-spark-sdk.jar'
+25/07/20 15:46:34 INFO Executor: Created or updated repl class loader org.apache.spark.util.MutableURLClassLoader@6ee5f485 for default.
+25/07/20 15:46:34 INFO Executor: Fetching file:///home/hadoop/.ivy2/jars/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar with timestamp 1753026393961
+25/07/20 15:46:34 INFO Utils: /home/hadoop/.ivy2/jars/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar has been previously copied to /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar
+25/07/20 15:46:34 INFO Executor: Fetching file:///home/hadoop/.ivy2/jars/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar with timestamp 1753026393961
+25/07/20 15:46:34 INFO Utils: /home/hadoop/.ivy2/jars/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar has been previously copied to /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar
+25/07/20 15:46:34 INFO Executor: Fetching spark://26d25fff1433:37477/jars/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar with timestamp 1753026393961
+25/07/20 15:46:34 INFO TransportClientFactory: Successfully created connection to 26d25fff1433/172.19.0.4:37477 after 30 ms (20 ms spent in bootstraps)
+25/07/20 15:46:34 INFO Utils: Fetching spark://26d25fff1433:37477/jars/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar to /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/fetchFileTemp17906649091422156959.tmp
+25/07/20 15:46:34 INFO Utils: /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/fetchFileTemp17906649091422156959.tmp has been previously copied to /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar
+25/07/20 15:46:34 INFO Executor: Adding file:/tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/software.amazon.glue_glue-extensions-for-iceberg-spark-runtime-3.5_2.12-0.3.0.jar to class loader default
+25/07/20 15:46:34 INFO Executor: Fetching spark://26d25fff1433:37477/jars/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar with timestamp 1753026393961
+25/07/20 15:46:34 INFO Utils: Fetching spark://26d25fff1433:37477/jars/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar to /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/fetchFileTemp3834393788206948327.tmp
+25/07/20 15:46:34 INFO Utils: /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/fetchFileTemp3834393788206948327.tmp has been previously copied to /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar
+25/07/20 15:46:34 INFO Executor: Adding file:/tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31/userFiles-3d4e841b-3145-4c45-bb54-1ba6d3c80029/org.apache.iceberg_iceberg-spark-runtime-3.5_2.12-1.6.1.jar to class loader default
+25/07/20 15:46:34 INFO Utils: Successfully started service 'org.apache.spark.network.netty.NettyBlockTransferService' on port 33449.
+25/07/20 15:46:34 INFO NettyBlockTransferService: Server created on 26d25fff1433:33449
+25/07/20 15:46:34 INFO BlockManager: Using org.apache.spark.storage.RandomBlockReplicationPolicy for block replication policy
+25/07/20 15:46:34 INFO BlockManagerMaster: Registering BlockManager BlockManagerId(driver, 26d25fff1433, 33449, None)
+25/07/20 15:46:34 INFO BlockManagerMasterEndpoint: Registering block manager 26d25fff1433:33449 with 4.6 GiB RAM, BlockManagerId(driver, 26d25fff1433, 33449, None)
+25/07/20 15:46:34 INFO BlockManagerMaster: Registered BlockManager BlockManagerId(driver, 26d25fff1433, 33449, None)
+25/07/20 15:46:34 INFO BlockManager: Initialized BlockManager: BlockManagerId(driver, 26d25fff1433, 33449, None)
+25/07/20 15:46:34 INFO SingleEventLogFileWriter: Logging events to file:/var/log/spark/apps/local-1753026394192.inprogress
+25/07/20 15:46:34 INFO SharedState: Setting hive.metastore.warehouse.dir ('null') to the value of spark.sql.warehouse.dir.
+25/07/20 15:46:34 WARN MetricsConfig: Cannot locate configuration: tried hadoop-metrics2-s3a-file-system.properties,hadoop-metrics2.properties
+25/07/20 15:46:34 INFO MetricsSystemImpl: Scheduled Metric snapshot period at 10 second(s).
+25/07/20 15:46:34 INFO MetricsSystemImpl: s3a-file-system metrics system started
+25/07/20 15:46:34 WARN ConfigurationHelper: Option fs.s3a.connection.establish.timeout is too low (5,000 ms). Setting to 15,000 ms instead
+25/07/20 15:46:34 INFO SharedState: Warehouse path is 's3://dss-agents-data-pipeline/warehouse'.
+25/07/20 15:46:35 INFO HiveUtils: Initializing HiveMetastoreConnection version 2.3.9-amzn-4 using Spark classes.
+25/07/20 15:46:35 INFO HiveClientImpl: Warehouse location for Hive client (version 2.3.9) is s3://dss-agents-data-pipeline/warehouse
+25/07/20 15:46:35 INFO GlueUtils: Using region from ec2 metadata : us-east-1
+25/07/20 15:46:35 INFO AWSGlueClientFactory: Setting glue service region to us-east-1
+25/07/20 15:46:38 INFO HiveUtils: Initializing execution hive, version 2.3.9-amzn-4
+25/07/20 15:46:38 INFO HiveClientImpl: Warehouse location for Hive client (version 2.3.9) is s3://dss-agents-data-pipeline/warehouse
+25/07/20 15:46:38 INFO SessionManager: Operation log root directory is created: /tmp/hadoop/operation_logs
+25/07/20 15:46:38 INFO SessionManager: HiveServer2: Background operation thread pool size: 100
+25/07/20 15:46:38 INFO SessionManager: HiveServer2: Background operation thread wait queue size: 100
+25/07/20 15:46:38 INFO SessionManager: HiveServer2: Background operation thread keepalive time: 10 seconds
+25/07/20 15:46:38 INFO AbstractService: Service:OperationManager is inited.
+25/07/20 15:46:38 INFO AbstractService: Service:SessionManager is inited.
+25/07/20 15:46:38 INFO AbstractService: Service: CLIService is inited.
+25/07/20 15:46:38 INFO AbstractService: Service:ThriftBinaryCLIService is inited.
+25/07/20 15:46:38 INFO AbstractService: Service: HiveServer2 is inited.
+25/07/20 15:46:38 INFO AbstractService: Service:OperationManager is started.
+25/07/20 15:46:38 INFO AbstractService: Service:SessionManager is started.
+25/07/20 15:46:38 INFO AbstractService: Service: CLIService is started.
+25/07/20 15:46:38 INFO AbstractService: Service:ThriftBinaryCLIService is started.
+25/07/20 15:46:38 INFO ThriftCLIService: Starting ThriftBinaryCLIService on port 10001 with 5...500 worker threads
+25/07/20 15:46:38 INFO AbstractService: Service:HiveServer2 is started.
+25/07/20 15:46:38 INFO HiveThriftServer2: HiveThriftServer2 started
+25/07/20 15:46:58 ERROR HiveThriftServer2: RECEIVED SIGNAL INT
+25/07/20 15:46:58 INFO SparkContext: SparkContext is stopping with exitCode 0.
+25/07/20 15:46:58 INFO HiveServer2: Shutting down HiveServer2
+25/07/20 15:46:58 INFO ThriftCLIService: Thrift server has stopped
+25/07/20 15:46:58 INFO AbstractService: Service:ThriftBinaryCLIService is stopped.
+25/07/20 15:46:58 INFO AbstractService: Service:OperationManager is stopped.
+25/07/20 15:46:58 INFO AbstractService: Service:SessionManager is stopped.
+25/07/20 15:46:58 INFO AbstractService: Service:CLIService is stopped.
+25/07/20 15:46:58 INFO AbstractService: Service:HiveServer2 is stopped.
+25/07/20 15:46:58 INFO MapOutputTrackerMasterEndpoint: MapOutputTrackerMasterEndpoint stopped!
+25/07/20 15:46:58 INFO MemoryStore: MemoryStore cleared
+25/07/20 15:46:58 INFO BlockManager: BlockManager stopped
+25/07/20 15:46:58 INFO BlockManagerMaster: BlockManagerMaster stopped
+25/07/20 15:46:58 INFO OutputCommitCoordinator$OutputCommitCoordinatorEndpoint: OutputCommitCoordinator stopped!
+25/07/20 15:46:58 INFO SparkContext: Successfully stopped SparkContext
+25/07/20 15:46:58 INFO ShutdownHookManager: Shutdown hook called
+25/07/20 15:46:58 INFO ShutdownHookManager: Deleting directory /tmp/spark-cc63849e-2175-44fc-818c-80fd45487195
+25/07/20 15:46:58 INFO ShutdownHookManager: Deleting directory /tmp/spark-8e37d366-f7c3-463b-80fa-10591a772733
+25/07/20 15:46:58 INFO ShutdownHookManager: Deleting directory /tmp/spark-06911800-c218-4ed1-a0ff-dc4fdf041e31
+25/07/20 15:46:58 INFO MetricsSystemImpl: Stopping s3a-file-system metrics system...
+25/07/20 15:46:58 INFO MetricsSystemImpl: s3a-file-system metrics system stopped.
+25/07/20 15:46:58 INFO MetricsSystemImpl: s3a-file-system metrics system shutdown complete.

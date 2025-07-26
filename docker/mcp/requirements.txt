@@ -1,0 +1,9 @@
+dbt-core
+sqlfluff-templater-dbt==3.3.0
+sqlfluff==3.3.0
+dbt-score==0.6.0
+dbt-metricflow==0.8.2
+dbt-spark[PyHive]
+fastmcp
+fastapi
+uvicorn

@@ -1,0 +1,7 @@
+input: "fetch Bitcoin market cap growth rate"
+expected_tools:
+  - name: fetch_metrics
+    args: {}
+  - name: create_query
+    args:
+      metrics: ["market_cap_growth_rate"]

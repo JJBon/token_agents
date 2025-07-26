@@ -126,5 +126,14 @@ compose-run-spark-dbt:	compose-up-spark-dbt
 	docker-compose -f ./docker/spark/docker-compose.yml exec \
         -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
         -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+		-e AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN}" \
         spark-master \
 		/bin/bash -c "/spark_utils/start-thrift-server.sh && /bin/bash"
+
+compose-run-langgraph:
+	docker-compose -f ./docker/spark/docker-compose.yml exec \
+        -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+        -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+        -e AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN}" \
+        langgraph-backend \
+        /bin/bash

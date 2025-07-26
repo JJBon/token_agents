@@ -1,0 +1,13 @@
+name: test_group_by_week
+input: "fetch weekly Bitcoin average price"
+expected_tools:
+  - name: fetch_metrics
+    args: {}
+  - name: create_query
+    args:
+      metrics: ["average_price_usd"]
+      group_by: ["metric_time__week"]
+  - name: fetch_query_result
+    args:
+      metrics: ["average_price_usd"]
+      group_by: ["metric_time__week"]

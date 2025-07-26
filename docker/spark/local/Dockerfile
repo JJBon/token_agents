@@ -29,11 +29,13 @@ ARG ENVIRONMENT
 
 # Install Python requirements
 COPY ./docker/spark/spark-utils/requirements.txt requirements.txt
+RUN mkdir -p /buildkite_artifacts 
 RUN /usr/bin/python3.11 -m pip install --no-cache-dir --ignore-installed -r requirements.txt 
 RUN /usr/bin/python3.11 -m pip install --force-reinstall dbt-adapters
+COPY ./python_wheels /wheels
+RUN cd /wheels && /usr/bin/python3.11 -m pip install 'dbt_spark-1.9.0b1-py3-none-any.whl[PyHive]'
 
-COPY ./docker/spark/spark-utils/adapter_backed_client.py  /usr/local/lib/python3.11/site-packages/dbt_metricflow/cli/dbt_connectors/adapter_backed_client.py 
-
+COPY ./docker/spark/spark-utils/adapter_backed_client.py  /usr/local/lib/python3.11/site-packages/dbt_metricflow/cli/dbt_connectors/adapter_backed_client.py
 
 # Copy dbt files and create necessary directories
 COPY ./dbt/coin_spark /var/lib/spark/coin_spark
@@ -46,7 +48,6 @@ ENV DBT_PROFILES_DIR=/var/lib/spark/.dbt
 
 
 # Install dbt dependencies
-RUN dbt clean
 RUN dbt deps
 
 # Copy additional scripts

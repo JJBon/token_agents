@@ -80,6 +80,9 @@ nohup spark-submit --deploy-mode client --master local[*] --driver-memory 8g --e
  --conf spark.sql.legacy.allowNonEmptyLocationInCTAS=true \
   >> "$THRIFT_SERVER_LOG" 2>&1 &
 
+ #--conf spark.sql.legacy.timeParserPolicy=LEGACY \
+
+
 # 'disown' ensures that once this script completes, the background process won't be killed
 disown
 
