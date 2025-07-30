@@ -40,14 +40,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../../dbt/coin_spark:/dbt/coin_spark
       - ../../dbt/profiles.yml:/dbt/profiles/profiles.yml
-    environment:
-      DBT_PROJECT_PATH: /dbt/coin_spark
-      DBT_PROFILES_DIR: /dbt/profiles
-      DBT_TARGET: dev-mcp-server
-      # Langfuse Integration
-      LANGFUSE_PUBLIC_KEY: pk-lf-329cba82-2726-468e-aaed-3bbaaa5d39ea
-      LANGFUSE_SECRET_KEY: sk-lf-771fd06e-17ce-4d00-a0df-006808b46e0c
-      LANGFUSE_HOST: http://langfuse-web:3000
+    env_file:
+      - ../../env/.env_dev_langgraph
     networks:
       - langfuse-network
 

@@ -16,6 +16,10 @@ SAFE_COIN_LIST := $(shell echo $(COINS) | tr ',' ' ' | sed 's/\.sql//g' | sed 's
 COIN_NAMES := $(shell ls $(MODELS_DIR)/denorm_*_history.sql 2>/dev/null | sed -E "s|.*/denorm_(.*)_history\.sql$$|\1|")
 SEMANTIC_TARGETS := $(patsubst %, $(MODELS_DIR)/%_semantic.yml, $(SAFE_COIN_LIST))
 
+env_file_path=env/.env_dev
+
+
+
 setup-env: $(VENV_DIR)/bin/activate
 
 $(VENV_DIR)/bin/activate: requirements.txt
@@ -123,7 +127,7 @@ compose-down-spark-dbt:
 
 .PHONY: compose-run-spark-dbt
 compose-run-spark-dbt:	compose-up-spark-dbt
-	docker-compose -f ./docker/spark/docker-compose.yml exec \
+	. $(env_file_path) && docker-compose -f ./docker/spark/docker-compose.yml exec \
         -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
         -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
 		-e AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN}" \
