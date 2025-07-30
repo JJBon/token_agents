@@ -5,3 +5,7 @@ expected_tools:
   - name: create_query
     args:
       metrics: ["market_cap_growth_rate"]
+expected_keywords:
+  - "Bitcoin"
+  - "market cap"
+  - "growth"

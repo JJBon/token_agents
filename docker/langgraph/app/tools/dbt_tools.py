@@ -1,6 +1,8 @@
 from langchain_core.tools import StructuredTool
 import json
-from .dbt_client import dbt_client,CreateQueryInput
+from .dbt_client import dbt_client,CreateQueryInput, DimensionSearchInput
+
+
 
 
 # -----------------------
@@ -10,6 +12,17 @@ def fetch_metrics() -> str:
     result = dbt_client.fetchMetrics()
     return json.dumps(result, indent=2)
 
+def search_dimension_values(**kwargs) -> str:
+    try:
+        params = DimensionSearchInput(**kwargs)
+        result = dbt_client.search_dimension_values(
+            dimension=params.dimension,
+            query=params.query,
+            max_results=params.max_results
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "error": str(e)})
 
 def create_query(**kwargs) -> str:
     try:
@@ -27,6 +40,8 @@ def fetch_query_result(**kwargs) -> str:
         return json.dumps(results.model_dump(), indent=2)
     except Exception as e:
         return json.dumps({"status": "ERROR", "error": str(e)})
+    
+
 
 
 # -----------------------
@@ -36,6 +51,13 @@ fetch_metrics_tool = StructuredTool.from_function(
     func=fetch_metrics,
     name="fetch_metrics",
     description="Fetch available metrics from the dbt semantic layer."
+)
+
+search_dimension_values_tool = StructuredTool.from_function(
+    func=search_dimension_values,
+    name="search_dimension_values",
+    description="Search cached dimension values for partial matches (e.g., BTC -> Bitcoin).",
+    args_schema=DimensionSearchInput
 )
 
 create_query_tool = StructuredTool.from_function(

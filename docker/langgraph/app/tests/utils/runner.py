@@ -1,6 +1,9 @@
 import yaml
-from evaluations.base_evaluator import convert_message, evaluate_messages
+from tests.utils.base_evaluator import convert_message, evaluate_messages
 from ragas.messages import ToolCall
+from prompts.prompts import query_agent_system_prompt
+from coin_gecko import lf_handler
+
 
 def load_scenario(path):
     with open(path, "r") as f:
@@ -18,7 +21,11 @@ async def run_scenario(scenario, simulate=False, graph=None):
                              "tool_calls": [tc.dict() for tc in expected_tools]}),
         ]
     else:
-        result = await graph.ainvoke({"messages": [user_input]})
+        result = await graph.ainvoke({
+                "messages": [{"role": "user", "content": user_input},
+                             {"role": "system", "content": query_agent_system_prompt.prompt}
+                             ],
+            },config={"callbacks":[lf_handler]})
         raw_messages = [{"type": m.__class__.__name__.replace("Message", "").lower(),
                          "content": getattr(m, "content", ""),
                          "tool_calls": getattr(m, "tool_calls", [])}

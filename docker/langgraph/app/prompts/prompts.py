@@ -1,23 +1,12 @@
-from ragas.experimental.prompt import PydanticPrompt
+from ragas.prompt import PydanticPrompt
 from pydantic import BaseModel, Field
 
-class QueryInput(BaseModel):
-    user_query: str = Field(...)
+from langfuse import get_client
 
-class QueryOutput(BaseModel):
-    tool_calls: list = Field(...)
+lf = get_client()
 
-class AgentPrompt(PydanticPrompt[QueryInput, QueryOutput]):
-    instruction = (
-        "You are a DBT agent. "
-        "First call `fetch_metrics`, then `create_query`, then `fetch_query_result`. "
-        "Return your output as a JSON with 'tool_calls': list of tool names in order."
+query_agent_system_prompt = lf.get_prompt(
+        "semantic/system-prompts/query-agent",
+        version="3"
     )
-    input_model = QueryInput
-    output_model = QueryOutput
-    examples = [
-        (
-            QueryInput(user_query="fetch bitcoin market cap growth rate"),
-            QueryOutput(tool_calls=["fetch_metrics", "create_query", "fetch_query_result"])
-        )
-    ]
+

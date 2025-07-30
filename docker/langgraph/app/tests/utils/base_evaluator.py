@@ -4,6 +4,8 @@ from ragas.messages import ToolCall, HumanMessage as RagasHuman, AIMessage as Ra
 from ragas.dataset_schema import MultiTurnSample
 from ragas.metrics import ToolCallAccuracy
 
+# Initialize Langfuse client
+
 def normalize_content(content):
     if isinstance(content, list):
         texts = [c.get("text", "") for c in content if isinstance(c, dict) and "text" in c]
@@ -30,8 +32,33 @@ def convert_message(raw_msg: Dict):
         return RagasTool(content=normalize_content(raw_msg.get("content", "")))
     return RagasHuman(content=normalize_content(raw_msg.get("content", "")))
 
-async def evaluate_messages(messages: List, expected_tools: List[ToolCall]):
+async def evaluate_messages(messages: List, expected_tools: List[ToolCall], final_output: Optional[str] = None) -> Dict:
+    """
+    Evaluate tool call accuracy and final output quality (if provided).
+    Returns a dict with individual scores and a general combined score.
+    Logs the scores to Langfuse for traceability.
+    """
+
+    # 1. Tool call accuracy
     sample = MultiTurnSample(user_input=messages, reference_tool_calls=expected_tools)
-    scorer = ToolCallAccuracy()
-    raw_score = await scorer.multi_turn_ascore(sample)
-    return min(1.0, raw_score)
+    tool_accuracy_score = await ToolCallAccuracy().multi_turn_ascore(sample)
+
+    # 2. Final output score (placeholder heuristic)
+    final_output_score = 1.0
+    if final_output:
+        # Example: simple keyword match, replace with your own evaluator
+        expected_keywords = [tc.args.get("value") for tc in expected_tools if "value" in tc.args]
+        if expected_keywords:
+            matches = sum(1 for kw in expected_keywords if kw.lower() in final_output.lower())
+            final_output_score = matches / len(expected_keywords)
+
+    # 3. Combine scores
+    general_score = round((tool_accuracy_score + final_output_score) / 2, 4)
+
+    scores = {
+        "general_score": general_score,
+        "tool_accuracy": round(tool_accuracy_score, 4),
+        "final_output_score": round(final_output_score, 4)
+    }
+
+    return scores

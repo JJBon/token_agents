@@ -18,10 +18,6 @@ semantic_models:
           time_granularity: day
       - name: coin_name
         type: categorical
-      - name: symbol
-        type: categorical
-      - name: ds
-        type: categorical
       - name: market_cap_usd_bucket
         type: categorical
         expr: market_cap_usd_bucket

@@ -18,11 +18,15 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 
+from prompts.prompts import query_agent_system_prompt
+
+
 # Import dbt-tools
 from tools.dbt_tools import (
     fetch_metrics_tool,
     create_query_tool,
     fetch_query_result_tool,
+    search_dimension_values_tool
 )
 
 # -----------------------
@@ -34,7 +38,7 @@ load_dotenv()
 lf = get_client()  # uses env vars
 lf_handler = CallbackHandler()
 
-tools = [fetch_metrics_tool, create_query_tool, fetch_query_result_tool]
+tools = [fetch_metrics_tool, create_query_tool, fetch_query_result_tool,search_dimension_values_tool]
 
 # -----------------------
 # State and Graph
@@ -125,7 +129,7 @@ async def main():
         try:
             result = await graph.ainvoke({
                 "messages": [{"role": "user", "content": message},
-                             {"role": "system", "content": "You are a DBT agent. First call fetch_metrics tool, then create_query, then fetch_query_result tools. restrict total number of tool call to 5 times"}
+                             {"role": "system", "content": query_agent_system_prompt.prompt}
                              ],
             },config={"callbacks":[lf_handler]})
             assistant = result["messages"][-1]

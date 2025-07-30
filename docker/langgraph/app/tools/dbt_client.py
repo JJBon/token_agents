@@ -7,10 +7,17 @@ import subprocess
 from typing import List, Optional, Union
 from pydantic import BaseModel, Field
 from enum import Enum
+import difflib
+
 import re
 
 
 logger = logging.getLogger(__name__)
+
+class DimensionSearchInput(BaseModel):
+    dimension: str = Field(..., description="The dimension to search in (e.g., token_day__coin_name).")
+    query: str = Field(..., description="The partial query string to match (e.g., BTC).")
+    max_results: int = Field(10, description="Maximum number of results to return.")
 
 
 class Logic(str, Enum):
@@ -134,270 +141,229 @@ class FetchResultsResponse(BaseModel):
 
 class DBTCoreClient:
     def __init__(self):
-        #self.project_dir = os.path.join(os.path.dirname(__file__), "coindbt")
-        self.last_query = None
-        self.project_dir =  os.environ["DBT_PROJECT_PATH"]
+        self.project_dir = os.environ["DBT_PROJECT_PATH"]
         self.manifest_path = os.path.join(self.project_dir, "target", "manifest.json")
-        
-        # Path to store metrics JSON file
         self.metrics_cache_file = os.path.join(self.project_dir, "target", "metrics_cache.json")
+        self.dimension_values_file = os.path.join(self.project_dir, "target", "dimension_values.json")
 
-        self._metrics_cache = None  # will store {"metrics": [ ... ]}
+        self._metrics_cache = None
         self._cache_lock = threading.Lock()
         self._cache_loading = False
 
-        # Attempt to load from file on init
         self._try_load_metrics_from_file()
         if self._metrics_cache is None:
             self._start_background_cache_loading()
 
+    # ---------------------
+    # Cache Management
+    # ---------------------
     def _try_load_metrics_from_file(self):
-        """Load metrics from a JSON file if it exists."""
         if os.path.exists(self.metrics_cache_file):
             try:
                 with open(self.metrics_cache_file, "r") as f:
-                    data = json.load(f)
-                    if "metrics" in data:
-                        self._metrics_cache = data
-                        logging.info(f"Loaded metrics from file: {self.metrics_cache_file}")
+                    self._metrics_cache = json.load(f)
+                logging.info(f"Loaded metrics+dimensions from {self.metrics_cache_file}")
             except Exception as e:
-                logging.error(f"Failed to load metrics from file: {e}")
+                logging.error(f"Failed to load metrics cache: {e}")
 
     def _write_metrics_to_file(self):
-        """Write the current metrics cache to a JSON file."""
         if self._metrics_cache is None:
             return
         try:
             with open(self.metrics_cache_file, "w") as f:
                 json.dump(self._metrics_cache, f, indent=2)
-            logging.info(f"Wrote metrics cache to file: {self.metrics_cache_file}")
+            logging.info(f"Saved metrics cache to {self.metrics_cache_file}")
         except Exception as e:
-            logging.error(f"Failed to write metrics to file: {e}")
+            logging.error(f"Failed to write metrics cache: {e}")
 
     def _start_background_cache_loading(self):
         with self._cache_lock:
             if not self._cache_loading:
                 self._cache_loading = True
-                logging.info("Starting background thread to build metrics cache...")
                 thread = threading.Thread(target=self._build_metrics_cache_background, daemon=True)
                 thread.start()
 
     def _build_metrics_cache_background(self):
         try:
             self._build_metrics_cache()
+            self._build_dimension_values_cache()
         except Exception as e:
-            logging.error(f"Background cache build failed: {e}")
+            logging.error(f"Background metrics cache build failed: {e}")
         finally:
             with self._cache_lock:
                 self._cache_loading = False
 
+    # ---------------------
+    # Metrics/Dimensions Fetching
+    # ---------------------
     def _build_metrics_cache(self):
         logging.info("Building metrics cache...")
-        # 1) Gather all metrics from dbt ls
         metrics_from_ls = self._get_all_metrics_info()
 
-        # 2) Load manifest.json (for better descriptions, etc.)
         manifest_data = {}
         if os.path.exists(self.manifest_path):
             with open(self.manifest_path, "r") as f:
                 manifest_data = json.load(f)
-        else:
-            logging.warning("No manifest.json found. Run dbt compile or dbt build first.")
-        manifest_metrics = manifest_data.get("metrics", {})
 
-        # 3) Use a thread pool to concurrently fetch dimensions for each metric
-        def process_metric(unique_id, metric_info):
-            metric_name = metric_info.get("name", "unknown_metric")
-            manifest_def = manifest_metrics.get(unique_id, {})
-            description = manifest_def.get("description") or metric_info.get("description", "")
-            dimensions = self._fetch_dimensions_for_metric(metric_name)
-            return {
+        manifest_metrics = manifest_data.get("metrics", {})
+        dimensions_map = {}
+        metrics_list = []
+
+        for uid, info in metrics_from_ls.items():
+            metric_name = info.get("name", "unknown_metric")
+            manifest_def = manifest_metrics.get(uid, {})
+            description = manifest_def.get("description", info.get("description", ""))
+
+            dimensions_for_metric = self._fetch_dimensions_for_metric(metric_name)
+
+            metrics_list.append({
                 "name": metric_name,
                 "description": description,
-                "dimensions": dimensions,
-            }
+                "dimensions": dimensions_for_metric
+            })
 
-        metrics_list = []
-        with ThreadPoolExecutor() as executor:
-            future_to_uid = {
-                executor.submit(process_metric, uid, info): uid 
-                for uid, info in metrics_from_ls.items()
-            }
-            for future in as_completed(future_to_uid):
-                try:
-                    result = future.result()
-                    metrics_list.append(result)
-                except Exception as e:
-                    uid = future_to_uid[future]
-                    logging.error(f"Error processing metric {uid}: {e}")
+            for dim in dimensions_for_metric:
+                if dim not in dimensions_map:
+                    dim_type = "time" if dim.startswith("metric_time") else "dimension"
+                    dimensions_map[dim] = {"type": dim_type, "values": []}
 
-        # 4) Store the results in our cache and write them to file
-        self._metrics_cache = {"metrics": metrics_list}
-        logging.info("Metrics cache built successfully.")
+        self._metrics_cache = {"metrics": metrics_list, "dimensions": dimensions_map}
         self._write_metrics_to_file()
 
     def _get_all_metrics_info(self):
-        logging.info("Fetching metrics from dbt with `dbt ls`...")
-        command = [
-            "dbt",
-            "ls",
-            "--resource-type", "metric",
-            "--output", "json",
-            "--quiet"
-        ]
-        result = subprocess.run(
-            command,
-            cwd=self.project_dir,
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        command = ["dbt", "ls", "--resource-type", "metric", "--output", "json", "--quiet"]
+        result = subprocess.run(command, cwd=self.project_dir, capture_output=True, text=True, check=True)
         lines = result.stdout.strip().split("\n")
-        metrics_map = {}
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            metric_data = json.loads(line)
-            unique_id = metric_data.get("unique_id")
-            if unique_id:
-                metrics_map[unique_id] = metric_data
-        return metrics_map
+        return {json.loads(line)["unique_id"]: json.loads(line) for line in lines if line.strip()}
 
-    def _fetch_dimensions_for_metric(self, metric_name: str):
+    def _fetch_dimensions_for_metric(self, metric_name: str) -> List[str]:
         command = ["mf", "list", "dimensions", "--metrics", metric_name]
-        logging.info(f"Running: {command}")
-        result = subprocess.run(
-            command,
-            cwd=self.project_dir,
-            capture_output=True,
-            text=True,
-            check=False
-        )
+        result = subprocess.run(command, cwd=self.project_dir, capture_output=True, text=True, check=False)
         if result.returncode != 0:
-            logging.warning(f"MetricFlow command failed for metric={metric_name}. "
-                            f"Return code={result.returncode}, stderr={result.stderr}")
+            logging.warning(f"MetricFlow failed for {metric_name}: {result.stderr}")
             return []
-        lines = result.stdout.strip().split("\n")
-        dimension_list = []
-        for line in lines:
+        return [line.replace("• ", "").strip() for line in result.stdout.splitlines() if line.startswith("• ")]
+
+    # ---------------------
+    # Dimension Values (Cached + Filtered)
+    # ---------------------
+    def _build_dimension_values_cache(self):
+        """Build and store dimension values cache for all dimensions."""
+        logging.info("Building dimension values cache...")
+        if not self._metrics_cache:
+            self._build_metrics_cache()
+
+        dimension_values = {}
+        first_metric = self._metrics_cache["metrics"][0]["name"] if self._metrics_cache["metrics"] else None
+
+        for dim, meta in self._metrics_cache.get("dimensions", {}).items():
+            if meta["type"] == "dimension":
+                values = self._fetch_dimension_values(first_metric, dim)
+                dimension_values[dim] = values
+
+        with open(self.dimension_values_file, "w") as f:
+            json.dump(dimension_values, f, indent=2)
+        logging.info(f"Dimension values cached to {self.dimension_values_file}")
+
+    def _fetch_dimension_values(self, metric_name: str, dimension: str) -> List[str]:
+        cmd = ["mf", "list", "dimension-values", "--metrics", metric_name, "--dimension", dimension]
+        res = subprocess.run(cmd, cwd=self.project_dir, capture_output=True, text=True, check=False)
+        if res.returncode != 0:
+            logging.warning(f"list dimension-values failed: {res.stderr}")
+            return []
+
+        values = []
+        for line in res.stdout.strip().split("\n"):
             line = line.strip()
-            if not line or line.startswith("✔"):
+            if not line or "Retrieving dimension values" in line or "We've found" in line or "✖" in line or "✔" in line:
                 continue
-            if line.startswith("• "):
-                dim_name = line.replace("• ", "").strip()
-                dimension_list.append(dim_name)
-        return list(set(dimension_list))
+            values.append(line.replace("• ", "").strip())
+        return values
 
+    def fetch_dimension_values_filtered(self, dimension: str, query: str, max_results: int = 10) -> List[str]:
+        """Fetch up to max_results matching values for a dimension from cached data."""
+        if not os.path.exists(self.dimension_values_file):
+            logging.warning("Dimension cache not found. Rebuilding...")
+            self._build_dimension_values_cache()
+
+        with open(self.dimension_values_file, "r") as f:
+            dimension_cache = json.load(f)
+
+        all_values = dimension_cache.get(dimension, [])
+        matches = difflib.get_close_matches(query, all_values, n=max_results, cutoff=0.3)
+        return matches
+
+    def search_dimension_values(self, dimension: str, query: str, max_results: int = 10) -> dict:
+        """Public tool to search for dimension values similar to query."""
+        matches = self.fetch_dimension_values_filtered(dimension, query, max_results)
+        return {"dimension": dimension, "query": query, "matches": matches}
+
+    # ---------------------
+    # Public API
+    # ---------------------
     def fetchMetrics(self):
-        """Return the metrics from our in-memory or file-based cache."""
-        if self._metrics_cache is None:
-            logging.warning("Metrics cache not ready in memory.")
-            self._try_load_metrics_from_file()
-
-        if self._metrics_cache is None:
-            logging.warning("Metrics cache still not ready. Returning empty result.")
-            return {"metrics": []}
-
-        return self._metrics_cache
+        return self._metrics_cache or {"metrics": [], "dimensions": {}}
 
     def refreshMetrics(self):
-        """Forcibly re-build the metrics cache (synchronously)."""
-        logging.info("Refreshing metrics cache (synchronously)...")
+        logging.info("Refreshing metrics cache...")
         with self._cache_lock:
             self._build_metrics_cache()
+            self._build_dimension_values_cache()
         return self._metrics_cache
 
-    def _find_dimensions_for_metric(self, metric_name: str):
-        """Return the valid dimensions for a given metric."""
-        if not self._metrics_cache:
-            return []
-        for m in self._metrics_cache["metrics"]:
-            if m["name"] == metric_name:
-                return m["dimensions"]
-        return []
-
-    #######################################
-    # createQuery returns the *structure*
-    # we want to pass to fetch_query_result
-    #######################################
-    
     def createQuery(self, query_params: CreateQueryInput) -> CreateQueryResponse:
         """
-        Validates and constructs a MetricFlow query dictionary from CreateQueryInput.
+        Validate metrics, group_by, and where clauses using metrics+dimensions cache.
+        Uses cached dimension values for validation instead of full fetch.
         """
-        metrics_list = query_params.metrics
-        group_by_fields = query_params.group_by_expressions
-        where_clause = query_params.where_clause
-        limit = query_params.limit
-        order_by = query_params.order_by or []
+        if self._metrics_cache is None:
+            self._try_load_metrics_from_file()
 
-        # 1. Validate presence of metrics
-        if not metrics_list:
-            return CreateQueryResponse(
-                status="ERROR",
-                query=query_params.dict(),
-                error="Missing required 'metrics' array."
-            )
+        metrics = [m["name"] for m in self._metrics_cache.get("metrics", [])]
+        for m in query_params.metrics:
+            if m not in metrics:
+                return CreateQueryResponse(
+                    status="ERROR",
+                    query=query_params.dict(),
+                    error=f"Metric '{m}' is not defined."
+                )
 
-        # 2. Validate group-by dimensions
-        invalid_group_dims = []
-        for metric_name in metrics_list:
-            valid_dims = self._find_dimensions_for_metric(metric_name)
-            for gb in query_params.group_by or []:
-                if gb.type == DimensionType.DIMENSION:
-                    dim_name = gb.to_expression()
-                    if dim_name not in valid_dims:
-                        invalid_group_dims.append((metric_name, dim_name))
+        dimensions = self._metrics_cache.get("dimensions", {})
+        for gb in query_params.group_by or []:
+            if gb.dimension not in dimensions:
+                return CreateQueryResponse(
+                    status="ERROR",
+                    query=query_params.dict(),
+                    error=f"Dimension '{gb.dimension}' is not available."
+                )
 
-        if invalid_group_dims:
-            error_lines = [
-                f"GroupBy Dimension '{dim}' not valid for metric '{metric}'. "
-                f"Valid dims: {self._find_dimensions_for_metric(metric)}"
-                for metric, dim in invalid_group_dims
-            ]
-            return CreateQueryResponse(
-                status="ERROR",
-                query=query_params.dict(),
-                error="\n\n".join(error_lines)
-            )
-
-        # 3. Validate where clause dimensions
-        invalid_where_dims = []
         if query_params.where:
-            for condition in query_params.where.conditions:
-                # Check only FilterField conditions
-                if isinstance(condition, FilterField) and condition.type == DimensionType.DIMENSION:
-                    for metric_name in metrics_list:
-                        valid_dims = self._find_dimensions_for_metric(metric_name)
-                        if condition.dimension not in valid_dims:
-                            invalid_where_dims.append((metric_name, condition.dimension))
+            for cond in query_params.where.conditions:
+                if isinstance(cond, FilterField):
+                    if cond.dimension not in dimensions:
+                        return CreateQueryResponse(
+                            status="ERROR",
+                            query=query_params.dict(),
+                            error=f"Dimension '{cond.dimension}' is not available."
+                        )
 
-        if invalid_where_dims:
-            error_lines = [
-                f"Where Dimension '{dim}' not valid for metric '{metric}'. "
-                f"Valid dims: {self._find_dimensions_for_metric(metric)}"
-                for metric, dim in invalid_where_dims
-            ]
-            return CreateQueryResponse(
-                status="ERROR",
-                query=query_params.dict(),
-                error="\n\n".join(error_lines)
-            )
+                    valid_values = self.fetch_dimension_values_filtered(
+                        cond.dimension, cond.value, max_results=20
+                    )
 
-        # 4. Build query dict
-        query_dict = {"metrics": metrics_list}
+                    if valid_values and cond.value not in valid_values:
+                        return CreateQueryResponse(
+                            status="ERROR",
+                            query=query_params.dict(),
+                            error=(
+                                f"Invalid value '{cond.value}' for dimension '{cond.dimension}'. "
+                                f"Did you mean: {valid_values[:5]} ?"
+                            )
+                        )
 
-        if group_by_fields:
-            query_dict["group_by"] = group_by_fields
-        if limit is not None:
-            query_dict["limit"] = limit
-        if order_by:
-            query_dict["order_by"] = order_by
-        if where_clause:
-            query_dict["where"] = query_params.where
-
+        query_dict = query_params.dict()
         return CreateQueryResponse(status="CREATED", query=query_dict)
+
     #######################################
     # Instead of referencing a stored queryId,
     # we run the query from the provided dict

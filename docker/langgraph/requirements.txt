@@ -16,3 +16,5 @@ langchain
 pytest
 pytest-asyncio
 ragas
+pytest-mock
+ragas_experimental
