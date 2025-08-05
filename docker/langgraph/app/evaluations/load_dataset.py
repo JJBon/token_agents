@@ -1,39 +1,8 @@
+from tools.dbt_tools import fetch_metrics_tool, create_query_tool, fetch_query_result_tool, search_dimension_values_tool
 import asyncio
-import json
-import logging
-
-from langfuse import get_client
-from ragas.integrations.langgraph import convert_to_ragas_messages
-from ragas.messages import ToolCall
-from prompts.prompts import query_agent_system_prompt
-
-from base_evaluator2 import evaluate_messages, convert_message
-from agents.dbt_agents import query_llm
-from tools.dbt_tools import (
-    fetch_metrics_tool,
-    create_query_tool,
-    fetch_query_result_tool,
-    search_dimension_values_tool
-)
-
-from coin_gecko import build_graph, lf_handler
-
-# -----------------------
-# Logging Setup
-# -----------------------
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-
-# -----------------------
-# Langfuse Client
-# -----------------------
-lf = get_client()
-
-# -----------------------
-# Tools and Graph
-# -----------------------
-tools = [fetch_metrics_tool, create_query_tool, fetch_query_result_tool, search_dimension_values_tool]
-graph = build_graph(tools, query_llm)
+from coin_gecko import  lf_handler, lf
+from app.evaluations.utils.runner import run_scenario_langraph
+from agents.query_agent.graph import graph 
 
 
 # -----------------------
@@ -47,47 +16,37 @@ async def evaluate_dataset(dataset_name: str):
 
     for item in items:
         user_input = item.input
-        expected_output = item.expected_output
 
         print(f"Running test for input: {user_input}")
 
         # Run the agent graph
-        result = await graph.ainvoke(
-            {
-                "messages": [
-                    {"role": "system", "content": query_agent_system_prompt.prompt},
-                    {"role": "user", "content": user_input}
-                ]
-            },
-            config={"callbacks": [lf_handler]}
-        )
+        tool_score = await run_scenario_langraph(item,simulate=False,graph=graph)
 
-        # # Convert messages to Ragas messages
-        ragas_msgs = [convert_message(m) for m in result["messages"]]
+        try:
+            trace_id = lf_handler.last_trace_id
+            lf.create_score(
+                trace_id=trace_id,
+                name="general_score",
+                value=tool_score["general_score"]
+            )
+            lf.create_score(
+                trace_id=trace_id,
+                name="tool_accuracy",
+                value=tool_score["tool_accuracy"]
+            )
+            lf.create_score(
+                trace_id=trace_id,
+                name="final_output_score",
+                value=tool_score["final_output_score"]
+            )
+        except Exception as e:
+            print(f"Warning: Unable to log score to Langfuse: {e}")
 
-        # # Reference tool calls
-        expected_tools = [
-            ToolCall(name=t["name"], args=t.get("args", {}))
-            for t in expected_output.get("expected_tools", [])
-        ]
+    print(f"Scenario '{item.input}' Tool Call Accuracy:", tool_score)
+    return tool_score
 
-        # # Final assistant output
-        final_output = str(result["messages"][-1].content)
 
-        # # Evaluate messages with Ragas-based evaluator
-        scores = await evaluate_messages(ragas_msgs, expected_tools, final_output)
 
-        print(f"Scores for '{user_input}': {json.dumps(scores, indent=2)}")
-
-        # # Log evaluation result to Langfuse
-        lf.create_event(
-            name="tool-call-evaluation",
-            input=user_input,
-            output={
-                "messages": [str(m) for m in result["messages"]],
-                "evaluation_scores": scores
-            }
-        )
 
     print("Evaluation completed.")
 
@@ -96,4 +55,4 @@ async def evaluate_dataset(dataset_name: str):
 # Entry Point
 # -----------------------
 if __name__ == "__main__":
-    asyncio.run(evaluate_dataset("Fetch Bitcoin Weekly Data"))
+    asyncio.run(evaluate_dataset("query_inputs"))

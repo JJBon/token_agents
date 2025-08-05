@@ -10,3 +10,7 @@ query_agent_system_prompt = lf.get_prompt(
         label="latest"
     )
 
+supervisor_agent_system_prompt = lf.get_prompt(
+        "semantic/system-prompts/bi-supervisor",
+        label="latest"
+    )

@@ -6,3 +6,4 @@ env
 *.tfstate
 *.backup
 dbt/coin_spark/logs
+__pycache__
