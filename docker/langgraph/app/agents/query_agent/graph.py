@@ -24,54 +24,61 @@ from tools.dbt_tools import (
 
 # optional tracing handler
 
-# --- LLM + tools setup ---
-bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
-llm = ChatBedrockConverse(
-    model="anthropic.claude-3-haiku-20240307-v1:0",
-    provider="anthropic",
-    temperature=0,
-    client=bedrock,
-)
-tools = [
-    fetch_metrics_tool,
-    create_query_tool,
-    fetch_query_result_tool,
-    search_dimension_values_tool,
-]
-llm_with_tools = llm.bind_tools(tools)
-
-# --- Prompt ---
-prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", f"{query_agent_system_prompt.prompt}"),
-        ("placeholder", "{messages}"),
-    ]
-)
-query_agent_chain = prompt | llm_with_tools
-
-# --- State ---
 class State(TypedDict):
-    messages: Annotated[List[Any], add_messages]
+        messages: Annotated[List[Any], add_messages]
 
-# --- Node ---
-async def query_agent(state: State, config: RunnableConfig):
-    response = await query_agent_chain.ainvoke(
-        {"messages": state["messages"]},
-        config=config,
+def build_graph(model="anthropic.claude-3-haiku-20240307-v1:0"
+                ,provider="anthropic",temperature=0, lf_handler=None, tools = [
+        fetch_metrics_tool,
+        create_query_tool,
+        fetch_query_result_tool,
+        search_dimension_values_tool,
+    ], system_prompt=query_agent_system_prompt.prompt):
+
+# --- LLM + tools setup ---
+    bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
+    llm = ChatBedrockConverse(
+        model=model,
+        provider=provider,
+        temperature=temperature,
+        client=bedrock,
     )
-    return {"messages": [response]}
+  
+    llm_with_tools = llm.bind_tools(tools)
 
-# --- Graph assembly ---
-memory = MemorySaver()
-graph_builder = StateGraph(State)
-graph_builder.add_node("query_agent", query_agent)
-tool_node = ToolNode(tools=tools)
-graph_builder.add_node("tools", tool_node)
-graph_builder.add_conditional_edges("query_agent", tools_condition)
-graph_builder.add_edge("tools", "query_agent")  # loop after tool runs
-graph_builder.add_edge(START, "query_agent")
-graph = graph_builder.compile(checkpointer=memory)
-graph.name = "QueryAgentGraph"
+    # --- Prompt ---
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", f"{system_prompt}"),
+            ("placeholder", "{messages}"),
+        ]
+    )
+    query_agent_chain = prompt | llm_with_tools
+
+    # --- State ---
+
+
+    # --- Node ---
+    async def query_agent(state: State, config: RunnableConfig):
+        response = await query_agent_chain.ainvoke(
+            {"messages": state["messages"]},
+            config=config,
+        )
+        return {"messages": [response]}
+
+    # --- Graph assembly ---
+    memory = MemorySaver()
+    graph_builder = StateGraph(State)
+    graph_builder.add_node("query_agent", query_agent)
+    tool_node = ToolNode(tools=tools)
+    graph_builder.add_node("tools", tool_node)
+    graph_builder.add_conditional_edges("query_agent", tools_condition)
+    graph_builder.add_edge("tools", "query_agent")  # loop after tool runs
+    graph_builder.add_edge(START, "query_agent")
+    graph = graph_builder.compile(checkpointer=memory)
+    graph.name = "QueryAgentGraph"
+    return graph
+
 
 # --- Expose as tool with structured I/O ---
 class QueryGraphArgs(BaseModel):
@@ -158,7 +165,7 @@ def _from_state(st: State) -> QueryGraphResult:
         raw_query_result=raw_query_result,
     )
 
-pipeline = RunnableLambda(_to_state) | graph | RunnableLambda(_from_state)
+pipeline = RunnableLambda(_to_state) | build_graph() | RunnableLambda(_from_state)
 query_graph_tool = pipeline.as_tool(
     args_schema=QueryGraphArgs,
     name="run_query_agent_graph",

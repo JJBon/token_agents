@@ -44,7 +44,7 @@ async def evaluate_messages(messages: List, expected_tools: List[ToolCall], fina
     tool_accuracy_score = await ToolCallAccuracy().multi_turn_ascore(sample)
 
     # 2. Final output score (placeholder heuristic)
-    final_output_score = 1.0
+    final_output_score = 0
     if final_output:
         # Example: simple keyword match, replace with your own evaluator
         expected_keywords = [tc.args.get("value") for tc in expected_tools if "value" in tc.args]

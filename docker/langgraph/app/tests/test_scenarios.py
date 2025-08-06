@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from tests.utils.runner import load_scenario, run_scenario
+from docker.langgraph.app.evaluations.utils.runner import load_scenario, run_scenario
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario_file", ["basic_bitcoin.yaml"])

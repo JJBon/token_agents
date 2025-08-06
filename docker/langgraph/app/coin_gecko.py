@@ -20,7 +20,9 @@ from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 from langfuse import observe
 from prompts.prompts import query_agent_system_prompt, supervisor_agent_system_prompt
-from agents.query_agent.graph import graph
+from agents.query_agent.graph import build_graph
+
+graph= build_graph()
 
 
 # Import dbt-tools
