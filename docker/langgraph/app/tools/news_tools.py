@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from typing import Dict, List, Any
 
 import requests
@@ -19,32 +20,57 @@ def fetch_crypto_news(query: str = "crypto") -> str:
 
     Returns JSON string with keys: status and articles list of {title, url}.
     """
-    try:
-        params = {
-            "auth_token": os.getenv("CRYPTOPANIC_API_KEY", ""),
-            "public": True,
-            "q": query,
-            "kind": "news",
-        }
-        resp = requests.get(NEWS_API_URL, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        articles = [
-            {"title": item.get("title", ""), "url": item.get("url", "")}
-            for item in data.get("results", [])
-            if item.get("title") and item.get("url")
-        ]
-        return json.dumps({"status": "OK", "articles": articles})
-    except Exception as e:  # pragma: no cover - network failure
-        return json.dumps({"status": "ERROR", "error": str(e), "articles": []})
+    params = {
+        "auth_token": os.getenv("CRYPTOPANIC_API_KEY", ""),
+        "public": True,
+        "q": query,
+        "kind": "news",
+    }
+    retries = 3
+    backoff = 1
+    for attempt in range(retries):
+        try:
+            resp = requests.get(NEWS_API_URL, params=params, timeout=10)
+            if resp.status_code == 429:
+                if attempt < retries - 1:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                error_details = {
+                    "status": "ERROR",
+                    "error": f"Rate limit exceeded: {resp.text or 'Too Many Requests'}",
+                    "status_code": resp.status_code,
+                    "articles": [],
+                }
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after:
+                    error_details["retry_after"] = retry_after
+                return json.dumps(error_details)
+            resp.raise_for_status()
+            data = resp.json()
+            articles = [
+                {"title": item.get("title", ""), "url": item.get("url", "")}
+                for item in data.get("results", [])
+                if item.get("title") and item.get("url")
+            ]
+            return json.dumps({"status": "OK", "articles": articles})
+        except Exception as e:  # pragma: no cover - network failure
+            if attempt < retries - 1:
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            return json.dumps({"status": "ERROR", "error": str(e), "articles": []})
 
 
 def _extract_tokens(text: str) -> List[str]:
     return [m.group(1).lower() for m in TOKEN_PATTERN.finditer(text or "")]
 
 
-def analyze_trending_tokens() -> List[Dict[str, Any]]:
-    """Retrieve crypto news and summarize insights per token.
+def analyze_trending_tokens(limit: int = 5) -> List[Dict[str, Any]]:
+    """Retrieve crypto news and summarize insights for top trending tokens.
+
+    Only the ``limit`` most-mentioned tokens in the general crypto news feed are
+    queried for detailed insights to avoid unnecessary API calls.
 
     Returns a list of dictionaries of the form::
         {
@@ -67,23 +93,28 @@ def analyze_trending_tokens() -> List[Dict[str, Any]]:
             entry = token_map.setdefault(t, {"relevant_news": []})
             entry["relevant_news"].append(art.get("url", ""))
 
-    for token in list(token_map.keys()):
+    # Select the top ``limit`` tokens based on frequency of appearance
+    top_tokens = sorted(
+        token_map.items(),
+        key=lambda item: len(item[1]["relevant_news"]),
+        reverse=True,
+    )[:limit]
+
+    result: List[Dict[str, Any]] = []
+    for token, info in top_tokens:
         detail = json.loads(fetch_crypto_news(token))
         if detail.get("status") == "OK":
             token_articles = detail.get("articles", [])
             titles = [a.get("title", "") for a in token_articles]
             if titles:
-                token_map[token]["insight"] = "; ".join(titles)
-                token_map[token]["relevant_news"] = [a.get("url", "") for a in token_articles]
+                info["insight"] = "; ".join(titles)
+                info["relevant_news"] = [a.get("url", "") for a in token_articles]
             else:
-                token_map[token]["insight"] = "No significant news found"
+                info["insight"] = "No significant news found"
         else:
-            token_map[token]["insight"] = "No significant news found"
+            info["insight"] = "No significant news found"
+        result.append({"token": token, **info})
 
-    result = [
-        {"token": token, **info}
-        for token, info in token_map.items()
-    ]
     return result
 
 
@@ -96,5 +127,5 @@ fetch_crypto_news_tool = StructuredTool.from_function(
 crypto_news_trends_tool = StructuredTool.from_function(
     func=analyze_trending_tokens,
     name="crypto_news_trends",
-    description="Fetch latest crypto news, identify trending tokens, and summarize insights.",
+    description="Fetch latest crypto news, identify top trending tokens (default top 5), and summarize insights.",
 )
