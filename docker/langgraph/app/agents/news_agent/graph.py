@@ -14,7 +14,9 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from tools.news_tools import fetch_crypto_news_tool, crypto_news_trends_tool
-
+from coin_gecko import lf_handler  # tracing callback
+import uuid
+import asyncio
 
 class State(TypedDict):
     messages: Annotated[List[Any], add_messages]
@@ -116,3 +118,25 @@ news_graph_tool = pipeline.as_tool(
     name="run_news_agent_graph",
     description="Runs the NewsAgentGraph and returns trending token insights.",
 )
+
+# === Example run ===
+async def main():
+    graph = build_graph()
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="fetch token data")],
+            "agent_calls": 0,
+            "last_signature": None,
+            "next": None,
+        },
+        config={
+            "thread_id": f"supervisor-{uuid.uuid4()}",
+            "callbacks": [lf_handler],
+            "tags": ["supervisor_flow"],
+            "metadata": {"entrypoint": "supervisor"},
+        },
+    )
+    print(result)
+
+if __name__ == "__main__":
+    asyncio.run(main())

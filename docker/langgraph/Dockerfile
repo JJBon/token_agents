@@ -13,7 +13,9 @@ RUN apt-get update && \
 COPY ./docker/langgraph/requirements.txt requirements.txt
 
 RUN pip install --no-cache-dir -r requirements.txt
-
+RUN playwright install-deps  
+RUN playwright install chromium
+ 
 COPY ./docker/spark/spark-utils/adapter_backed_client.py  /usr/local/lib/python3.11/site-packages/dbt_metricflow/cli/dbt_connectors/adapter_backed_client.py
 
 

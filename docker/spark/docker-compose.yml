@@ -35,6 +35,7 @@ services:
     entrypoint: /bin/sh
     ports:
       - "7860:7860"
+      - "2024:2024"
     volumes:
       - ../../docker/langgraph/app:/app
       - /var/run/docker.sock:/var/run/docker.sock
