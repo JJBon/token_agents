@@ -17,6 +17,75 @@ from agents.news_agent.AbstractGraph import AbstractGraph
 from scrapegraphai.graphs.base_graph import BaseGraph 
 import boto3
 from langchain_aws import ChatBedrockConverse
+from scrapegraphai.nodes.base_node import BaseNode
+import json
+
+class EndNode(BaseNode):
+    """
+    No-op terminal node so ConditionalNode's FALSE branch points to a real node.
+    """
+    def __init__(
+        self,
+        node_name: str = "__END__",
+        input: str = "",
+        output=None,
+        node_config=None,
+    ):
+        super().__init__(
+            node_name=node_name,
+            input=input or "",
+            output=output or [],
+            node_config=node_config or {},
+            node_type="node",   # <-- MUST be 'node' (not 'end')
+        )
+
+    def execute(self, state: dict) -> dict:
+        # Do nothing; just terminate the run cleanly.
+        return {}
+
+
+class DeduplicateNode(BaseNode):
+    def __init__(self, input="answer", output=["answer"], node_name="Deduplicate"):
+        super().__init__(node_name, "node", input, output, 1, node_config={})
+
+    def _norm_title(self, t):
+        t = (t or "").lower()
+        t = re.sub(r'\s+', ' ', t).strip()
+        return t
+
+    def _norm_link(self, url):
+        if not url: return ""
+        url = url.strip()
+        # strip tracking params
+        url = url.split("#")[0]
+        base, *qs = url.split("?")
+        if qs:
+            # keep only stable params if you want, else drop all
+            url = base
+        return url.lower()
+
+    def execute(self, state):
+        payload = state.get("answer", "")
+        try:
+            data = json.loads(payload)
+        except Exception:
+            return state  # if not JSON, don't break the run
+
+        for token, obj in list(data.items()):
+            items = obj.get("news", [])
+            seen = set()
+            deduped = []
+            for it in items:
+                key = (self._norm_title(it.get("title","")),
+                       self._norm_link(it.get("link","")))
+                if key in seen: 
+                    continue
+                seen.add(key)
+                deduped.append(it)
+            obj["news"] = deduped
+
+        state["answer"] = json.dumps(data, ensure_ascii=False)
+        return state
 
 class SmartScraperGraph(AbstractGraph):
     """
@@ -50,6 +119,8 @@ class SmartScraperGraph(AbstractGraph):
         >>> result = smart_scraper.run()
         )
     """
+
+
 
     def __init__(
         self,
@@ -104,18 +175,33 @@ class SmartScraperGraph(AbstractGraph):
 
         #     return response
 
+        end_node = EndNode(node_name="__END__")   
+
+        dedup_node = DeduplicateNode()
+
+
+        
         fetch_node = FetchNode(
             input="url | local_dir",
             output=["doc"],
             node_config={
                 "llm_model": self.llm_model,
-                "force": self.config.get("force", False),
-                "cut": self.config.get("cut", True),
-                "loader_kwargs": self.config.get("loader_kwargs", {}),
-                "browser_base": self.config.get("browser_base"),
-                "scrape_do": self.config.get("scrape_do"),
+                "force": True,
+                "cut": False,
+                "headless": True,
+                # IMPORTANT: remove browser_base completely so ChromiumLoader is used
+                # "browser_base": None,
                 "storage_state": self.config.get("storage_state"),
-            },
+            }
+            # node_config={
+            #     "llm_model": self.llm_model,
+            #     "force": self.config.get("force", False),
+            #     "cut": self.config.get("cut", True),
+            #     "loader_kwargs": self.config.get("loader_kwargs", {}),
+            #     "browser_base": self.config.get("browser_base"),
+            #     "scrape_do": self.config.get("scrape_do"),
+            #     "storage_state": self.config.get("storage_state"),
+            # },
         )
         parse_node = ParseNode(
             input="doc",
@@ -136,22 +222,27 @@ class SmartScraperGraph(AbstractGraph):
         cond_node = None
         regen_node = None
         if self.config.get("reattempt") is True:
-            cond_node = ConditionalNode(
-                input="answer",
-                output=["answer"],
-                node_name="ConditionalNode",
-                node_config={
-                    "key_name": "answer",
-                    "condition": 'not answer or answer=="NA"',
-                },
-            )
+            # name the regen node so the conditional can target it
             regen_node = GenerateAnswerNode(
                 input="user_prompt & answer",
                 output=["answer"],
+                node_name="RegenerateAnswerNode",
                 node_config={
                     "llm_model": self.llm_model,
                     "additional_info": REGEN_ADDITIONAL_INFO,
                     "schema": self.schema,
+                },
+            )
+
+            cond_node = ConditionalNode(
+                input="answer",
+                output=["answer"],
+                node_name="CheckAnswer",
+                node_config={
+                    "key_name": "answer",
+                    "condition": 'not answer or answer=="NA"',
+                    "true_node_name": "RegenerateAnswerNode",  # go to regen on TRUE
+                    "false_node_name": "__END__",              # end graph on FALSE
                 },
             )
 
@@ -204,64 +295,45 @@ class SmartScraperGraph(AbstractGraph):
                 "edges": [(fetch_node, parse_node), (parse_node, generate_answer_node)],
             },
             (False, True, True): {
-                "nodes": [
-                    fetch_node,
-                    parse_node,
-                    reasoning_node,
-                    generate_answer_node,
-                    cond_node,
-                    regen_node,
-                ],
+                "nodes": [fetch_node, parse_node, reasoning_node, generate_answer_node, cond_node, regen_node, end_node],
                 "edges": [
                     (fetch_node, parse_node),
                     (parse_node, reasoning_node),
                     (reasoning_node, generate_answer_node),
                     (generate_answer_node, cond_node),
-                    (cond_node, regen_node),
-                    (cond_node, None),
+                    (cond_node, regen_node),  # TRUE
+                    (cond_node, end_node),    # FALSE -> EndNode (NOT None)
                 ],
             },
             (True, True, True): {
-                "nodes": [
-                    fetch_node,
-                    reasoning_node,
-                    generate_answer_node,
-                    cond_node,
-                    regen_node,
-                ],
+                "nodes": [fetch_node, reasoning_node, generate_answer_node, cond_node, regen_node, end_node],
                 "edges": [
                     (fetch_node, reasoning_node),
                     (reasoning_node, generate_answer_node),
                     (generate_answer_node, cond_node),
                     (cond_node, regen_node),
-                    (cond_node, None),
+                    (cond_node, end_node),
                 ],
             },
-            (True, False, True): {
-                "nodes": [fetch_node, generate_answer_node, cond_node, regen_node],
+            (True, False, True):   {
+                "nodes": [fetch_node, generate_answer_node, cond_node, regen_node, end_node],
                 "edges": [
                     (fetch_node, generate_answer_node),
                     (generate_answer_node, cond_node),
                     (cond_node, regen_node),
-                    (cond_node, None),
+                    (cond_node, end_node),
                 ],
             },
-            (False, False, True): {
-                "nodes": [
-                    fetch_node,
-                    parse_node,
-                    generate_answer_node,
-                    cond_node,
-                    regen_node,
-                ],
+            (False, False, True):  {
+                "nodes": [fetch_node, parse_node, generate_answer_node, cond_node, regen_node, end_node],
                 "edges": [
                     (fetch_node, parse_node),
                     (parse_node, generate_answer_node),
                     (generate_answer_node, cond_node),
                     (cond_node, regen_node),
-                    (cond_node, None),
+                    (cond_node, end_node),
                 ],
-            },
+            }
         }
 
         # Get the current conditions
@@ -310,42 +382,51 @@ if __name__ == "__main__":
             client=bedrock
         )
     PROMPT = """
-        You are a careful news researcher.
+    You are a careful news researcher.
 
-        Task:
-        0) Do slow queries, avoid rate limits. Wait at least 10 seconds before requests
-        1) From the page, fetch EXACTLY 20 trending crypto news items visible on the site.
-        2) For each item, click through to the article and read briefly.
-        3) Write a 1-2 sentence insight that hints bullish/bearish/neutral.
-        4) Group insights by token 
+    Task:
+    0) Do slow queries, avoid rate limits. Wait at least 10 seconds before requests.
+    1) From the page, fetch EXACTLY 40 trending crypto news items visible on the site.
+    2) For each item, click through to the article and read briefly.
+    3) Write a 1-2 sentence insight that hints bullish/bearish/neutral.
+    4) Group insights by token.
 
-        Output (JSON only, no prose):
-        {
-        "ethereum": { "news": [ {"title": "", "insights": "", "link": ""} ] },
-        "bitcoin": { "news": [] },
-        "solana":  { "news": [] },
-        "ripple":  { "news": [] },
-        "dogecoin":{ "news": [] },
-        "cardano": { "news": [] },
-        "polkadot":{ "news": [] }
-        }
+    Output (JSON only, no prose):
+    {
+    "ethereum": { "news": [ { "title": "", "insights": "", "link": "" } ] },
+    "bitcoin":  { "news": [] },
+    "solana":   { "news": [] },
+    "ripple":   { "news": [] },
+    "dogecoin": { "news": [] },
+    "cardano":  { "news": [] },
+    "polkadot": { "news": [] },
+    "other":    { "news": [] }  // optional backfill bucket
+    }
 
-        Rules:
-        - Group by tokens: bitcoin/btc, ethereum/eth, solana/sol, ripple/xrp, dogecoin/doge, cardano/ada, polkadot/dot.
-        - If unsure, omit the token.
-        - Max 20 total items across all tokens.
-        - Keep insights short (≤ 280 chars).
-        - Return valid JSON, no markdown, no commentary.
+    Rules:
+    - Group by tokens: bitcoin/btc, ethereum/eth, solana/sol, ripple/xrp, dogecoin/doge, cardano/ada, polkadot/dot.
+    - Prefer the 7 listed tokens. Use "other" only if a listed token has <5 valid items available.
+    - Aim for UNIFORM distribution: 5-6 items per listed token.
+    * Hard limits per listed token: MIN 5, MAX 6.
+    * If a token has <5 items available, fill the shortfall in "other".
+    - EXACTLY 40 total items across all tokens combined (including "other" if used).
+    - Keep insights ≤ 280 chars.
+    - Return valid JSON, no markdown, no commentary.
+
+    Validation (before returning):
+    - Count items per token. If any listed token has <5, pull surplus from tokens with >6 where possible.
+    - If still <5 after rebalancing, place additional items in "other".
+    - Ensure total == 40 and all listed tokens are within 5-6 items.
     """
     graph = SmartScraperGraph(
             prompt=PROMPT,
-            source="https://cryptopanic.com",
+            source="https://cryptopanic.com/news?filter=hot",
             config={ "llm":
                      {
                         "model": "anthropic.claude-3-haiku-20240307-v1:0",
                         "temperature":0,
-                        "max_tokens": 20000,
-                        "model_tokens": 20000
+                        "max_tokens": 40000,
+                        "model_tokens": 40000
                     }, 
                 "verbose": True,
                 "html_mode": True,
