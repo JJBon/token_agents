@@ -86,6 +86,39 @@ class DeduplicateNode(BaseNode):
 
         state["answer"] = json.dumps(data, ensure_ascii=False)
         return state
+    
+class ValidateQuotaNode(BaseNode):
+    def __init__(self, input="answer", output=["answer"], node_name="ValidateQuota"):
+        super().__init__(node_name, "node", input, output, 1, node_config={})
+        self.tokens = ["ethereum","bitcoin","solana","ripple","dogecoin","cardano","polkadot","other"]
+
+    def execute(self, state):
+        import json
+        raw = state.get("answer","")
+        try:
+            data = json.loads(raw)
+        except Exception:
+            state["__valid__"] = False
+            state["__reason__"] = "invalid_json"
+            return state
+
+        total = 0
+        per = {}
+        hard_fail = False
+        for t in self.tokens:
+            n = len(data.get(t,{}).get("news",[])) if isinstance(data.get(t),dict) else 0
+            per[t] = n
+            total += n
+
+        # hard limits per listed token (other excluded)
+        listed = ["ethereum","bitcoin","solana","ripple","dogecoin","cardano","polkadot"]
+        bounds_fail = any(not (5 <= per.get(t,0) <= 6) for t in listed)
+
+        state["__valid__"] = (total == 40 and not bounds_fail)
+        state["__reason__"] = None if state["__valid__"] else {
+            "total": total, "per_token": per, "bounds_fail": bounds_fail
+        }
+        return state
 
 class SmartScraperGraph(AbstractGraph):
     """
@@ -272,64 +305,77 @@ class SmartScraperGraph(AbstractGraph):
         # (html_mode, reasoning, reattempt)
         graph_variation_config = {
             (False, True, False): {
-                "nodes": [fetch_node, parse_node, reasoning_node, generate_answer_node],
+                "nodes": [fetch_node, parse_node, reasoning_node, generate_answer_node, dedup_node],
                 "edges": [
                     (fetch_node, parse_node),
                     (parse_node, reasoning_node),
                     (reasoning_node, generate_answer_node),
+                    (generate_answer_node, dedup_node),
                 ],
             },
             (True, True, False): {
-                "nodes": [fetch_node, reasoning_node, generate_answer_node],
+                "nodes": [fetch_node, reasoning_node, generate_answer_node, dedup_node],
                 "edges": [
                     (fetch_node, reasoning_node),
                     (reasoning_node, generate_answer_node),
+                    (generate_answer_node, dedup_node),
                 ],
             },
             (True, False, False): {
-                "nodes": [fetch_node, generate_answer_node],
-                "edges": [(fetch_node, generate_answer_node)],
+                "nodes": [fetch_node, generate_answer_node, dedup_node],
+                "edges": [
+                    (fetch_node, generate_answer_node),
+                    (generate_answer_node, dedup_node),
+                ],
             },
             (False, False, False): {
-                "nodes": [fetch_node, parse_node, generate_answer_node],
-                "edges": [(fetch_node, parse_node), (parse_node, generate_answer_node)],
+                "nodes": [fetch_node, parse_node, generate_answer_node, dedup_node],
+                "edges": [
+                    (fetch_node, parse_node),
+                    (parse_node, generate_answer_node),
+                    (generate_answer_node, dedup_node),
+                ],
             },
             (False, True, True): {
-                "nodes": [fetch_node, parse_node, reasoning_node, generate_answer_node, cond_node, regen_node, end_node],
+                "nodes": [fetch_node, parse_node, reasoning_node, generate_answer_node, dedup_node, cond_node, regen_node, end_node],
                 "edges": [
                     (fetch_node, parse_node),
                     (parse_node, reasoning_node),
                     (reasoning_node, generate_answer_node),
-                    (generate_answer_node, cond_node),
-                    (cond_node, regen_node),  # TRUE
-                    (cond_node, end_node),    # FALSE -> EndNode (NOT None)
+                    (generate_answer_node, dedup_node),
+                    (dedup_node, cond_node),
+                    (cond_node, regen_node),
+                    (cond_node, end_node),
                 ],
             },
             (True, True, True): {
-                "nodes": [fetch_node, reasoning_node, generate_answer_node, cond_node, regen_node, end_node],
+                "nodes": [fetch_node, reasoning_node, generate_answer_node, dedup_node, cond_node, regen_node, end_node],
                 "edges": [
                     (fetch_node, reasoning_node),
                     (reasoning_node, generate_answer_node),
-                    (generate_answer_node, cond_node),
+                    (generate_answer_node, dedup_node),
+                    (dedup_node, cond_node),
                     (cond_node, regen_node),
                     (cond_node, end_node),
                 ],
             },
-            (True, False, True):   {
-                "nodes": [fetch_node, generate_answer_node, cond_node, regen_node, end_node],
+            (True, False, True): {
+                "nodes": [fetch_node, generate_answer_node, dedup_node, cond_node, regen_node, end_node],
                 "edges": [
                     (fetch_node, generate_answer_node),
-                    (generate_answer_node, cond_node),
+                    (generate_answer_node, dedup_node),
+                    (dedup_node, cond_node),
                     (cond_node, regen_node),
                     (cond_node, end_node),
                 ],
             },
-            (False, False, True):  {
-                "nodes": [fetch_node, parse_node, generate_answer_node, cond_node, regen_node, end_node],
+            (False, False, True): {
+                "nodes": [fetch_node, parse_node, generate_answer_node, dedup_node, cond_node, regen_node, end_node],
                 "edges": [
                     (fetch_node, parse_node),
                     (parse_node, generate_answer_node),
-                    (generate_answer_node, cond_node),
+                    (generate_answer_node, dedup_node),
+                    (dedup_node, cond_node),
                     (cond_node, regen_node),
                     (cond_node, end_node),
                 ],
