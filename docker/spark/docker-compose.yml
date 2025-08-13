@@ -20,8 +20,6 @@ services:
       - ../../dbt/profiles.yml:/var/lib/spark/.dbt/profiles.yml
       - ../../docker/spark/spark-utils/start-thrift-server.sh:/spark_utils/start-thrift-server.sh
       - ../../docker/spark/spark-utils/hive-site.xml:/etc/spark/conf/hive-site.xml
-    networks:
-      - langfuse-network
 
   # -----------------------------
   # Langgraph Backend
@@ -43,9 +41,5 @@ services:
       - ../../dbt/profiles.yml:/dbt/profiles/profiles.yml
     env_file:
       - ../../env/.env_dev_langgraph
-    networks:
-      - langfuse-network
-
-networks:
-  langfuse-network:
-    external: true
+    network_mode: host
+    

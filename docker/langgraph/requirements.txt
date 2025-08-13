@@ -21,3 +21,5 @@ ragas_experimental
 playwright
 fastembed
 bs4
+scrapegraphai
+trafilatura
