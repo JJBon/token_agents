@@ -168,6 +168,10 @@ resource "aws_glue_catalog_database" "coingecko" {
   name = "coingecko"
 }
 
+resource "aws_glue_catalog_database" "news_agent" {
+  name = "news_agent"
+}
+
 resource "aws_glue_catalog_table" "coingecko_raw" {
   name          = "coingecko_raw"
   database_name = aws_glue_catalog_database.coingecko.name
@@ -254,5 +258,23 @@ resource "aws_glue_catalog_table" "coingecko_raw" {
 
     compressed        = false
     stored_as_sub_directories = false
+  }
+}
+
+module "bedrock_kb" {
+  source = "./modules/bedrock_kb"
+
+  kb_name               = "coingecko-kb"
+  s3_naming_prefix      = var.s3_naming_prefix
+  s3_bucket_arn         = aws_s3_bucket.coingecko_data.arn
+  s3_inclusion_prefixes = ["kb-docs/"] # upload docs to s3://${aws_s3_bucket.coingecko_data.bucket}/kb-docs/
+
+  # Optional overrides
+  kb_embedding_model_arn = "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0"
+  allow_public_network   = true
+
+  tags = {
+    Project = "coingecko"
+    Env     = "dev"
   }
 }

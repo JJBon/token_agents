@@ -23,3 +23,5 @@ fastembed
 bs4
 scrapegraphai
 trafilatura
+readability-lxml
+lxml_html_clean
