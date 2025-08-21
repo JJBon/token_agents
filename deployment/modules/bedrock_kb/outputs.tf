@@ -22,3 +22,9 @@ output "role_arn" {
   value       = aws_iam_role.bedrock_kb_role.arn
   description = "IAM role used by the KB"
 }
+
+output "collection_endpoint" {
+  description = "AOSS collection HTTPS endpoint (used to create the index)"
+  value       = aws_opensearchserverless_collection.kb.collection_endpoint
+}
+

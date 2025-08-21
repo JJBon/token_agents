@@ -36,3 +36,39 @@ variable "tags" {
   description = "Tags to apply to created resources"
   default     = {}
 }
+
+variable "source_vpce_ids" {
+  description = "Allowed VPC endpoint IDs for AOSS network policy (optional)"
+  type        = list(string)
+  default     = []
+}
+
+variable "source_services" {
+  description = "Allowed AWS services for AOSS network policy (optional)"
+  type        = list(string)
+  default     = []
+}
+
+variable "kb_index_name" {
+  type        = string
+  description = "Name of the OpenSearch Serverless vector index the KB will use"
+  default     = "bedrock-knowledge-base-default-index"
+}
+
+variable "kb_vector_dimension" {
+  type        = number
+  description = "Vector dimension for the index; Titan v2 default is 1024"
+  default     = 1024
+}
+
+variable "index_knn_ef_search" {
+  type        = number
+  description = "k-NN ef_search setting (HNSW)"
+  default     = 512
+}
+
+variable "extra_aoss_principals" {
+  description = "Additional IAM principal ARNs allowed on AOSS data policy (users/roles)"
+  type        = list(string)
+  default     = []
+}

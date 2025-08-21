@@ -2,6 +2,68 @@
 # OpenSearch Serverless policies + collection
 #############################################
 
+data "aws_caller_identity" "current" {}
+data "aws_iam_session_context" "current" { arn = data.aws_caller_identity.current.arn }
+data "aws_region" "current" {}
+
+
+locals {
+  account_root_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+
+  kb_network_rule = merge(
+    {
+      Description     = "Network policy for KB collection"
+      Rules           = [{
+        ResourceType = "collection"
+        Resource     = ["collection/${var.s3_naming_prefix}-kb"]
+      }]
+      AllowFromPublic = var.allow_public_network
+    },
+    # Only include private keys when not public
+    var.allow_public_network ? {} : merge(
+      length(var.source_vpce_ids) > 0 ? { SourceVPCEs    = var.source_vpce_ids } : {},
+      length(var.source_services) > 0 ? { SourceServices = var.source_services } : {}
+    )
+  )
+
+   
+  aoss_principals = distinct(compact([
+    aws_iam_role.bedrock_kb_role.arn,
+    local.account_root_arn,                                 # <-- add this
+    data.aws_caller_identity.current.arn,                   # may be an STS session
+    try(data.aws_iam_session_context.current.issuer_arn, null),
+  ]))
+
+  kb_index_body = {
+    settings = {
+      index = {
+        knn                               = true
+        "knn.algo_param.ef_search"        = tostring(var.index_knn_ef_search)
+        number_of_shards                  = "1"
+        number_of_replicas                = "1"
+      }
+    }
+    mappings = {
+      properties = {
+        # Bedrock KB default field names
+        "bedrock-knowledge-base-default-vector" = {
+          type      = "knn_vector"
+          dimension = var.kb_vector_dimension
+          method    = {
+            engine     = "faiss"
+            name       = "hnsw"
+            space_type = "l2"
+            parameters = { ef_construction = 512, m = 16 }
+          }
+        }
+        "AMAZON_BEDROCK_TEXT_CHUNK" = { type = "text" }
+        "AMAZON_BEDROCK_METADATA"   = { type = "text" }
+      }
+    }
+  }
+}
+
+
 resource "aws_opensearchserverless_security_policy" "kb_encryption" {
   name        = "${var.s3_naming_prefix}-kb-encryption"
   type        = "encryption"
@@ -18,14 +80,15 @@ resource "aws_opensearchserverless_security_policy" "kb_encryption" {
 resource "aws_opensearchserverless_security_policy" "kb_network" {
   name        = "${var.s3_naming_prefix}-kb-network"
   type        = "network"
-  description = "Network policy for KB vector collection"
+  description = "Public network policy for KB vector collection"
+
   policy = jsonencode([{
-    Description = "Network policy for KB collection"
-    Rules = [{
-      ResourceType    = "collection",
-      Resource        = ["collection/${var.s3_naming_prefix}-kb"]
-      AllowFromPublic = var.allow_public_network
-    }]
+    Description     = "Public access for KB collection"
+    AllowFromPublic = true
+    Rules = [
+      { ResourceType = "dashboard",  Resource = ["collection/${var.s3_naming_prefix}-kb"] },
+      { ResourceType = "collection", Resource = ["collection/${var.s3_naming_prefix}-kb"] }
+    ]
   }])
 }
 
@@ -47,11 +110,19 @@ resource "aws_iam_role" "bedrock_kb_role" {
   name = "${var.s3_naming_prefix}-bedrock-kb-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
-    Statement = [{
+    Statement = [
+      {
       Effect    = "Allow",
       Principal = { Service = "bedrock.amazonaws.com" },
       Action    = "sts:AssumeRole"
-    }]
+      },
+      {
+      Sid       = "AllowTerraformApplyPrincipal",
+      Effect    = "Allow",
+      Principal = { AWS =  data.aws_caller_identity.current.arn },
+      Action    = "sts:AssumeRole"
+      }
+    ]
   })
 }
 
@@ -83,7 +154,7 @@ resource "aws_iam_policy" "bedrock_kb_policy" {
       # AOSS data-plane API (further constrained by AOSS data access policy below)
       {
         Effect   = "Allow",
-        Action   = ["aoss:APIAccessAll"],
+        Action   = ["aoss:*"],
         Resource = "*"
       }
     ]
@@ -102,35 +173,34 @@ resource "aws_iam_role_policy_attachment" "bedrock_kb_attach" {
 resource "aws_opensearchserverless_access_policy" "kb_data" {
   name        = "${var.s3_naming_prefix}-kb-data"
   type        = "data"
-  description = "Data access policy for Bedrock KB role"
+  description = "Data access policy for Bedrock KB role and Terraform caller"
   policy = jsonencode([{
-    Description = "KB role access to collection and indexes"
-    Principal   = [aws_iam_role.bedrock_kb_role.arn]
+    Description = "Access to collection and indexes"
+    Principal   = local.aoss_principals
     Rules = [
       {
         ResourceType = "collection"
-        Resource     = ["collection/${aws_opensearchserverless_collection.kb.name}"]
-        Permission   = ["aoss:DescribeCollectionItems"]
+        Resource     = ["collection/*"]
+        Permission   = ["aoss:*"]
       },
       {
         ResourceType = "index"
-        Resource     = ["index/${aws_opensearchserverless_collection.kb.name}/*"]
-        Permission   = [
-          "aoss:CreateIndex",
-          "aoss:UpdateIndex",
-          "aoss:DescribeIndex",
-          "aoss:ReadDocument",
-          "aoss:WriteDocument"
-        ]
+        Resource     = ["index/*/*"]
+        Permission   = ["aoss:*"]
       }
     ]
   }])
+  lifecycle {
+    precondition {
+      condition     = length(local.aoss_principals) > 0
+      error_message = "AOSS data access policy requires at least one Principal."
+    }
+  }
 }
 
 #############################################
 # Bedrock Knowledge Base + S3 Data Source
 #############################################
-
 resource "aws_bedrockagent_knowledge_base" "kb" {
   name     = var.kb_name
   role_arn = aws_iam_role.bedrock_kb_role.arn
@@ -146,7 +216,7 @@ resource "aws_bedrockagent_knowledge_base" "kb" {
     type = "OPENSEARCH_SERVERLESS"
     opensearch_serverless_configuration {
       collection_arn    = aws_opensearchserverless_collection.kb.arn
-      vector_index_name = "bedrock-knowledge-base-default-index"
+      vector_index_name =  "bedrock-knowledge-base-default-index" #var.kb_index_name  # <— use the created index
       field_mapping {
         vector_field   = "bedrock-knowledge-base-default-vector"
         text_field     = "AMAZON_BEDROCK_TEXT_CHUNK"
@@ -155,9 +225,7 @@ resource "aws_bedrockagent_knowledge_base" "kb" {
     }
   }
 
-  depends_on = [aws_opensearchserverless_access_policy.kb_data]
-
-  tags = var.tags
+  tags       = var.tags
 }
 
 resource "aws_bedrockagent_data_source" "kb_s3" {
