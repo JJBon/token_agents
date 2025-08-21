@@ -2,26 +2,7 @@ provider "aws" {
   region = "us-east-1"
 }
 
-
-
 data "aws_caller_identity" "current" {}
-
-variable region {
-  type        = string
-  default     = "us-east-1"
-  description = "description"
-}
-
-
-variable ingestion_image {
-  type        = string
-  description = "description"
-}
-
-variable s3_naming_prefix {
-  type        = string
-  description = "description"
-}
 
 
 ######################
