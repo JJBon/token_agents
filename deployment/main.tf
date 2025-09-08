@@ -1,8 +1,35 @@
+terraform {
+  required_version = ">= 1.6"
+}
+
 provider "aws" {
   region = "us-east-1"
 }
 
+provider "awscc" { region = "us-east-1" }
+
 data "aws_caller_identity" "current" {}
+data "aws_ecr_repository" "ingest" {
+  name = "coingecko-ingest"
+}
+
+data "aws_ecr_image" "latest" {
+  repository_name = data.aws_ecr_repository.ingest.name
+  image_tag       = "latest"
+}
+
+data "aws_vpc" "selected" {
+  # either default = true OR filter by tag
+  default = true
+}
+
+data "aws_subnets" "private" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.selected.id]
+  }
+
+}
 
 
 ######################
@@ -89,14 +116,6 @@ resource "aws_iam_role_policy_attachment" "lambda_attach" {
 
 }
 
-data "aws_ecr_repository" "ingest" {
-  name = "coingecko-ingest"
-}
-
-data "aws_ecr_image" "latest" {
-  repository_name = data.aws_ecr_repository.ingest.name
-  image_tag       = "latest"
-}
 
 ######################
 # Lambda Function
@@ -111,12 +130,12 @@ resource "aws_lambda_function" "ingest_snapshot" {
 
   source_code_hash = data.aws_ecr_image.latest.image_digest
 
-  timeout     = 60
+  timeout     = 360
   memory_size = 512
 
   environment {
     variables = {
-      S3_BUCKET = aws_s3_bucket.coingecko_data.bucket
+      S3_BUCKET         = aws_s3_bucket.coingecko_data.bucket
       COINGECKO_API_KEY = "arn:aws:secretsmanager:${var.region}:${data.aws_caller_identity.current.account_id}:secret:coingecko/api_key:api_key::"
     }
   }
@@ -237,24 +256,192 @@ resource "aws_glue_catalog_table" "coingecko_raw" {
       type = "timestamp"
     }
 
-    compressed        = false
+    compressed                = false
     stored_as_sub_directories = false
   }
 }
 
-module "bedrock_kb" {
-  source = "./modules/bedrock_kb"
-
-  kb_name               = "coingecko-kb"
-  s3_naming_prefix      = var.s3_naming_prefix
-  s3_bucket_arn         = aws_s3_bucket.coingecko_data.arn
-  s3_inclusion_prefixes = ["kb-docs/"]
-
-  kb_index_name       = var.kb_index_name
-  kb_vector_dimension = var.kb_vector_dimension
-
-  # Public internet access for the vector DB
-  allow_public_network = true
-
-  tags = { Project = "coingecko", Env = "dev" }
+module "aurora_pg" {
+  source        = "./modules/aurora_pgvector"
+  name          = "${var.s3_naming_prefix}-kb-pg"
+  vpc_id        = data.aws_vpc.selected.id
+  subnet_ids    = data.aws_subnets.private.ids
+  db_name       = "kbdb"
+  min_acu       = 0
+  max_acu       = 4
+  allowed_cidrs = [] # usually empty; KB connects via service role + secret
 }
+
+
+resource "null_resource" "wait_data_api" {
+  triggers = { cluster_arn = module.aurora_pg.cluster_arn }
+  depends_on = [module.aurora_pg]
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    environment = {
+      CLUSTER_ARN = self.triggers.cluster_arn
+      AWS_REGION  = var.region
+    }
+    command = <<EOT
+set -euo pipefail
+
+# Get the bit after ':cluster:' safely, without  expansion
+CLUSTER_ID="$(printf '%s\n' "$CLUSTER_ARN" | awk -F: '{print $NF}')"
+
+for i in $(seq 1 60); do
+  ready="$(aws rds describe-db-clusters \
+    --db-cluster-identifier "$CLUSTER_ID" \
+    --query 'DBClusters[0].HttpEndpointEnabled' \
+    --output text 2>/dev/null || true)"
+
+  if [ "$ready" = "True" ]; then
+    echo "✅ Data API ready on $CLUSTER_ID"
+    exit 0
+  fi
+
+  echo "⏳ Waiting for Data API on $CLUSTER_ID... ($i/60)"
+  sleep 10
+done
+
+echo "❌ Timed out waiting for Data API on $CLUSTER_ID" >&2
+exit 1
+EOT
+  }
+}
+
+resource "null_resource" "bootstrap_pgvector" {
+  depends_on = [null_resource.wait_data_api]
+
+  triggers = {
+    cluster_arn = module.aurora_pg.cluster_arn
+    secret_arn  = module.aurora_pg.secret_arn
+    db          = module.aurora_pg.db_name
+    dim         = tostring(var.kb_vector_dimension)
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    environment = {
+      CLUSTER_ARN = self.triggers.cluster_arn
+      SECRET_ARN  = self.triggers.secret_arn
+      DB          = self.triggers.db
+      DIM         = self.triggers.dim
+    }
+    command = <<EOT
+set -euo pipefail
+
+execsql() {
+  local sql="$1"
+  local tries=0
+  local max=40      # ~200s worst case
+  local sleep_s=5
+  while true; do
+    set +e
+    out=$(aws rds-data execute-statement \
+      --resource-arn "$CLUSTER_ARN" \
+      --secret-arn   "$SECRET_ARN" \
+      --database     "$DB" \
+      --sql "$sql" 2>&1)
+    rc=$?
+    set -e
+    if [ $rc -eq 0 ]; then
+      break
+    fi
+    if echo "$out" | grep -qiE 'DatabaseResumingException|Communications|timeout|Throttl|BadGateway|ServiceUnavailable|database is starting up'; then
+      tries=$((tries+1))
+      if [ $tries -ge $max ]; then
+        echo "❌ Gave up after $tries attempts: $out" >&2
+        exit 1
+      fi
+      echo "⏳ DB resuming or transient error; retry $tries/$max..."
+      sleep $sleep_s
+      continue
+    fi
+    echo "❌ Non-retryable error: $out" >&2
+    exit 1
+  done
+}
+
+# Warm up: keep pinging until SELECT 1 works
+execsql "SELECT 1;"
+
+# 1) Extension
+execsql "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# 2) Tables
+execsql "CREATE TABLE IF NOT EXISTS public.research_kb (
+  id uuid PRIMARY KEY,
+  chunks TEXT,
+  embedding VECTOR($DIM),
+  metadata JSONB,
+  custom_metadata JSONB
+);"
+
+execsql "CREATE TABLE IF NOT EXISTS public.news_kb (
+  id uuid PRIMARY KEY,
+  chunks TEXT,
+  embedding VECTOR($DIM),
+  metadata JSONB,
+  custom_metadata JSONB
+);"
+
+# 3) Required indexes for Bedrock KB
+execsql "CREATE INDEX IF NOT EXISTS research_kb_hnsw
+  ON public.research_kb USING hnsw (embedding vector_cosine_ops);"
+execsql "CREATE INDEX IF NOT EXISTS news_kb_hnsw
+  ON public.news_kb USING hnsw (embedding vector_cosine_ops);"
+
+execsql "CREATE INDEX IF NOT EXISTS research_kb_chunks_tsv_gin
+  ON public.research_kb USING gin (to_tsvector('simple', chunks));"
+execsql "CREATE INDEX IF NOT EXISTS news_kb_chunks_tsv_gin
+  ON public.news_kb USING gin (to_tsvector('simple', chunks));"
+
+execsql "CREATE INDEX IF NOT EXISTS research_kb_custom_md_gin
+  ON public.research_kb USING gin (custom_metadata);"
+execsql "CREATE INDEX IF NOT EXISTS news_kb_custom_md_gin
+  ON public.news_kb USING gin (custom_metadata);"
+EOT
+  }
+}
+
+
+# --- Research KB (S3 -> Aurora/pgvector) ---
+module "kb_research_pg" {
+  source                = "./modules/bedrock_kb"
+  name                  = "${var.s3_naming_prefix}-kb-research"
+  aurora_cluster_arn    = module.aurora_pg.cluster_arn
+  rds_secret_arn        = module.aurora_pg.secret_arn
+  database_name         = module.aurora_pg.db_name
+  table_name            = "public.research_kb" # your pg table (created once)
+  pk_field              = "id"
+  text_field            = "chunks"
+  vector_field          = "embedding"
+  metadata_field        = "metadata"
+  custom_metadata_field = "custom_metadata"
+
+  source_bucket_arn = aws_s3_bucket.research_docs.arn
+  source_prefixes   = ["research/"]
+}
+
+# --- News KB (S3 -> Aurora/pgvector) ---
+module "kb_news_pg" {
+  source                = "./modules/bedrock_kb"
+  name                  = "${var.s3_naming_prefix}-kb-news"
+  aurora_cluster_arn    = module.aurora_pg.cluster_arn
+  rds_secret_arn        = module.aurora_pg.secret_arn
+  database_name         = module.aurora_pg.db_name
+  table_name            = "public.news_kb"
+  pk_field              = "id"
+  text_field            = "chunks"
+  vector_field          = "embedding"
+  metadata_field        = "metadata"
+  custom_metadata_field = "custom_metadata"
+
+  source_bucket_arn = aws_s3_bucket.news_docs.arn
+  source_prefixes   = ["news/"]
+}
+
+# Example S3 buckets for the two Kbs:
+resource "aws_s3_bucket" "research_docs" { bucket = "${var.s3_naming_prefix}-research-kb" }
+resource "aws_s3_bucket" "news_docs" { bucket = "${var.s3_naming_prefix}-news-kb" } 

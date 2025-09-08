@@ -1,17 +1,17 @@
 
-variable region {
+variable "region" {
   type        = string
   default     = "us-east-1"
   description = "description"
 }
 
 
-variable ingestion_image {
+variable "ingestion_image" {
   type        = string
   description = "description"
 }
 
-variable s3_naming_prefix {
+variable "s3_naming_prefix" {
   type        = string
   description = "description"
 }

@@ -1,4 +1,4 @@
-from tools.dbt_tools import fetch_metrics_tool, create_query_tool, fetch_query_result_tool, search_dimension_values_tool
+from docker.langgraph.app.tools.query_tools.dbt_tools import fetch_metrics_tool, create_query_tool, fetch_query_result_tool, search_dimension_values_tool
 import asyncio
 from coin_gecko import  lf_handler, lf
 from evaluations.utils.runner import run_scenario_langraph

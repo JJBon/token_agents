@@ -15,7 +15,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from prompts.prompts import query_agent_system_prompt
-from tools.dbt_tools import (
+from docker.langgraph.app.tools.query_tools.dbt_tools import (
     fetch_metrics_tool,
     create_query_tool,
     fetch_query_result_tool,
