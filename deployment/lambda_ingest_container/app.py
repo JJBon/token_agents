@@ -14,9 +14,15 @@ PER_PAGE = 250
 
 def fetch_all_pages(per_page=250, max_pages=20, pause=2):
     all_data, page = [], 1
+    headers = {
+        "Accept": "application/json",
+        "x_cg_demo_api_key": os.environ["COINGECKO_API_KEY"]
+    }
+
     while page <= max_pages:
         resp = requests.get(
             "https://api.coingecko.com/api/v3/coins/markets",
+            headers=headers,
             params={
                 "vs_currency": "usd",
                 "order": "market_cap_desc",
@@ -25,10 +31,11 @@ def fetch_all_pages(per_page=250, max_pages=20, pause=2):
                 "per_page": PER_PAGE,
                 "price_change_percentage": "1h,24h,7d",
                 "precision": 3,
-                "x_cg_demo_api_key": os.environ["COINGECKO_API_KEY"]
             },
         )
+
         if resp.status_code == 429:
+            print(f"Rate limited on page {page}, retrying...")
             time.sleep(pause * 2)
             continue
 
@@ -36,30 +43,30 @@ def fetch_all_pages(per_page=250, max_pages=20, pause=2):
         chunk = resp.json()
         if not chunk:
             break
-        print(chunk)
+        print(f"Fetched {len(chunk)} items from page {page}")
         all_data.extend(chunk)
         page += 1
-    print(all_data)
+
+    print(f"Total fetched: {len(all_data)}")
     return all_data
 
 def lambda_handler(event, context):
     raw_data = fetch_all_pages()
-    #raw = response.json()
 
     if not isinstance(raw_data, list):
-            raise ValueError("Unexpected API format")
+        raise ValueError("Unexpected API format")
 
     fields = [
-            "name", "current_price", "market_cap", "circulating_supply", "total_supply",
-            "last_updated", "ath", "atl", "roi", "price_change_percentage_1h_in_currency",
-            "price_change_percentage_24h_in_currency", "price_change_percentage_7d_in_currency",
-            "total_volume", "high_24h", "low_24h"
-        ]
+        "name", "current_price", "market_cap", "circulating_supply", "total_supply",
+        "last_updated", "ath", "atl", "roi", "price_change_percentage_1h_in_currency",
+        "price_change_percentage_24h_in_currency", "price_change_percentage_7d_in_currency",
+        "total_volume", "high_24h", "low_24h"
+    ]
 
     def extract(row):
-            flat = {k: row.get(k, None) for k in fields if k != "roi"}
-            flat["roi"] = row.get("roi", {}).get("percentage") if row.get("roi") else None
-            return flat
+        flat = {k: row.get(k, None) for k in fields if k != "roi"}
+        flat["roi"] = row.get("roi", {}).get("percentage") if row.get("roi") else None
+        return flat
 
     df = pd.DataFrame([extract(row) for row in raw_data])
     df["last_updated"] = pd.to_datetime(df["last_updated"], utc=True)
@@ -72,13 +79,9 @@ def lambda_handler(event, context):
     buffer.seek(0)
 
     partition = df["ds"].iloc[0]
-    timestamp = datetime.utcnow().isoformat()
     s3_key = f"{S3_PREFIX}/{partition}-snapshot.parquet"
 
     s3 = boto3.client("s3")
     s3.upload_fileobj(buffer, S3_BUCKET, s3_key)
 
     return {"status": "success", "rows": len(df), "s3_key": s3_key}
-
-if __name__ == "__main__":
-     lambda_handler(None,None)

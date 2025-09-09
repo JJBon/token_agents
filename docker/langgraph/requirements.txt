@@ -18,3 +18,10 @@ pytest-asyncio
 ragas
 pytest-mock
 ragas_experimental
+playwright
+fastembed
+bs4
+scrapegraphai
+trafilatura
+readability-lxml
+lxml_html_clean

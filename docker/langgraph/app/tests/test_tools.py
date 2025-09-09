@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 pytest.skip("dbt tools tests require DBT environment", allow_module_level=True)
 
-from tools import dbt_tools
+from docker.langgraph.app.tools.query_tools import dbt_tools
 
 @pytest.mark.asyncio
 async def test_fetch_metrics_tool(mocker):

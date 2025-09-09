@@ -15,7 +15,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from prompts.prompts import query_agent_system_prompt
-from tools.dbt_tools import (
+from docker.langgraph.app.tools.query_tools.dbt_tools import (
     fetch_metrics_tool,
     create_query_tool,
     fetch_query_result_tool,
@@ -27,22 +27,25 @@ from tools.dbt_tools import (
 class State(TypedDict):
         messages: Annotated[List[Any], add_messages]
 
-def build_graph(model="anthropic.claude-3-haiku-20240307-v1:0"
-                ,provider="anthropic",temperature=0, lf_handler=None, tools = [
+def build_graph(config: RunnableConfig = None):
+    config = config or {}
+    model = config.get("model", "anthropic.claude-3-haiku-20240307-v1:0")
+    provider = config.get("provider", "anthropic")
+    temperature = config.get("temperature", 0.0)
+    bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
+    llm = ChatBedrockConverse(
+        model=model, provider=provider, temperature=temperature, client=bedrock
+    )
+
+    tools = [
         fetch_metrics_tool,
         create_query_tool,
         fetch_query_result_tool,
         search_dimension_values_tool,
-    ], system_prompt=query_agent_system_prompt.prompt):
+    ]
+    
+    system_prompt=query_agent_system_prompt.prompt
 
-# --- LLM + tools setup ---
-    bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
-    llm = ChatBedrockConverse(
-        model=model,
-        provider=provider,
-        temperature=temperature,
-        client=bedrock,
-    )
   
     llm_with_tools = llm.bind_tools(tools)
 
@@ -103,7 +106,6 @@ def _to_state(args: Union[QueryGraphArgs, dict]) -> State:
 def _from_state(st: State) -> QueryGraphResult:
     # Get last LLM / agent message content
     text = st["messages"][-1].content if st.get("messages") else ""
-    lower = text.lower()
 
     # Extract labeled sections
     ds_idx = lower.find("data:")
