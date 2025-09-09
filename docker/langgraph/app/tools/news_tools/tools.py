@@ -2,6 +2,8 @@
 from __future__ import annotations
 import os, re, json, time, asyncio, logging, uuid, hashlib
 from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+
 
 import boto3
 import requests
@@ -98,8 +100,8 @@ def _kb_filter(symbols: List[str] | None = None,
                date_to_iso:   str | None = None) -> dict | None:
     """
     Build Bedrock retrieve() filter for S3 KB:
-      symbols -> listContains
-      as_of   -> string comparisons
+      symbols      -> listContains
+      as_of_epoch  -> numeric comparisons
     """
     clauses: List[dict] = []
 
@@ -110,10 +112,15 @@ def _kb_filter(symbols: List[str] | None = None,
         elif sym_or:
             clauses.append({"orAll": sym_or})
 
+    # NEW: convert ISO window to numeric epoch and compare on as_of_epoch
     if date_from_iso:
-        clauses.append({"greaterThanOrEquals": {"key": "as_of", "value": date_from_iso}})
+        ep_from = _iso_to_epoch(date_from_iso)
+        if ep_from is not None:
+            clauses.append({"greaterThanOrEquals": {"key": "as_of_epoch", "value": ep_from}})
     if date_to_iso:
-        clauses.append({"lessThanOrEquals": {"key": "as_of", "value": date_to_iso}})
+        ep_to = _iso_to_epoch(date_to_iso)
+        if ep_to is not None:
+            clauses.append({"lessThanOrEquals": {"key": "as_of_epoch", "value": ep_to}})
 
     if not clauses:
         return None
@@ -190,6 +197,29 @@ def _regex_symbol_name_hints(text: str) -> List[TokenMention]:
         if key not in uniq or h.confidence > uniq[key].confidence:
             uniq[key] = h
     return list(uniq.values())
+
+def _iso_to_epoch(iso_str: Optional[str]) -> Optional[int]:
+    """Return seconds since epoch (int) for an ISO/RFC2822-like string; None if parse fails."""
+    if not iso_str:
+        return None
+    s = iso_str.strip()
+    # ISO8601 first
+    try:
+        if s.endswith("Z"):
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        else:
+            dt = datetime.fromisoformat(s)
+        return int(dt.timestamp())
+    except Exception:
+        pass
+    # RFC 2822 fallback
+    try:
+        dt = parsedate_to_datetime(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
 
 # --------------- Tools -----------------
 @tool("ensure_iceberg_tables")
@@ -361,27 +391,24 @@ def kb_ingest_news_tool(rows: List[dict],
     uploaded = 0
     for r in rows:
         news_id = r.get("news_id") or sha256((r.get("news_url") or r.get("title") or str(uuid.uuid4())))
-
-        # 1) Upload TXT
+        # 1) Upload TXT (unchanged)
         text = _best_fulltext(r)
-        _s3.put_object(
-            Bucket=NEWS_KB_BUCKET,
-            Key=_s3_key_for_doc(news_id),
-            Body=(text or "").encode("utf-8"),
-            ContentType="text/plain; charset=utf-8",
-        )
 
-        # 2) Upload sidecar (typed metadataAttributes)
+        # 2) Upload sidecar — ADD as_of_epoch
         currencies = r.get("currencies") or []
         symbols = sorted({c.get("symbol") for c in currencies if isinstance(c, dict) and c.get("symbol")})
+        as_of_iso = r.get("published_at_iso")
+        as_of_epoch = _iso_to_epoch(as_of_iso)
+
         raw_meta = _clean_meta({
-            "news_id":  news_id,
-            "url":      r.get("news_url"),
-            "headline": r.get("title"),
-            "source":   r.get("source_name"),
-            "as_of":    r.get("published_at_iso"),
-            "symbols":  symbols,                     # used in filters
-            "tags":     r.get("tags") or _derive_tags(r),
+            "news_id":   news_id,
+            "url":       r.get("news_url"),
+            "headline":  r.get("title"),
+            "source":    r.get("source_name"),
+            "as_of":     as_of_iso,          # keep string for display
+            "as_of_epoch": as_of_epoch,      # NEW: numeric for filtering
+            "symbols":   symbols,
+            "tags":      r.get("tags") or _derive_tags(r),
             "sentiment": r.get("sentiment"),
         })
         sidecar = build_kb_sidecar(raw_meta)
@@ -389,7 +416,7 @@ def kb_ingest_news_tool(rows: List[dict],
         _s3.put_object(
             Bucket=NEWS_KB_BUCKET,
             Key=_s3_key_for_meta(news_id),
-            Body=json.dumps(sidecar, ensure_ascii=False).encode("utf-8"),
+            Body=(text or "").encode("utf-8"),
             ContentType="application/json",
         )
         uploaded += 1
@@ -492,12 +519,15 @@ def persist_bronze_tool(rows: List[Dict[str, Any]], extractor_temperature: float
     bronze_news_rows, bronze_reason_rows = [], []
     for r in rows:
         r_tags = r.get("tags") or _derive_tags(r)
+        pub_iso = r.get("published_at_iso")
+        pub_epoch = _iso_to_epoch(pub_iso)
         bronze_news_rows.append({
             "news_id": r["news_id"],
             "news_url": r.get("news_url"),
             "title": r.get("title"),
             "source_name": r.get("source_name"),
             "published_at": r.get("published_at_iso"),
+            "published_at_epoch": pub_epoch, 
             "sentiment": r.get("sentiment"),
             "api_payload": {**r, "tags": r_tags},
             "currencies": r.get("currencies", []),
@@ -543,11 +573,14 @@ def persist_iceberg_tool(rows: List[Dict[str, Any]], extractor_temperature: floa
 
     for r in rows:
         r_tags = r.get("tags") or _derive_tags(r)
+        pub_iso = r.get("published_at_iso")
+        pub_epoch = _iso_to_epoch(pub_iso)
 
         payload_obj = {
             "news_url":  r.get("news_url"),
             "title":     r.get("title"),
             "date_iso":  r.get("published_at_iso"),
+            "date_epoch": pub_epoch,  
             "source":    r.get("source_name"),
             "sentiment": r.get("sentiment"),
             "tags":      [t for t in r_tags if isinstance(t, str)],

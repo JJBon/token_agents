@@ -42,6 +42,7 @@ export
         deploy update-lambda clean \
         compose-build-spark-dbt compose-up-spark-dbt compose-down-spark-dbt \
         compose-run-spark-dbt compose-run-langgraph \
+        verify-market-env \
         setup-env install-requirements run download \
         generate-semantics generate-denorm generate-denorm-all-coins generate-all-coins-metrics \
         dbt-deps dbt-run dbt-docs test_agents all
@@ -56,6 +57,8 @@ help:
 	@echo "  compose-up-spark-dbt, compose-run-spark-dbt, compose-run-langgraph, compose-down-spark-dbt"
 	@echo "DBT & utils:"
 	@echo "  download, generate-denorm, generate-denorm-all-coins, generate-semantics, generate-all-coins-metrics, dbt-run, dbt-docs, all"
+	@echo "Validation:"
+	@echo "  verify-market-env  # checks required env vars for market tools"
 
 # =========================
 # ECR AUTH / BUILD / PUSH
@@ -94,7 +97,10 @@ terraform-apply: terraform-init
 	  -var="ingestion_image=$(IMAGE_NAME)"
 
 # Export TF outputs -> env/.env_infra for runtime:
-#   AWS_REGION, NEWS_KB_ID, NEWS_KB_DS_ID, NEWS_KB_BUCKET, NEWS_KB_PREFIX
+#   AWS_REGION,
+#   NEWS_KB_ID, NEWS_KB_DS_ID, NEWS_KB_BUCKET, NEWS_KB_PREFIX,
+#   RESEARCH_KB_ID,
+#   AURORA_CLUSTER_ARN, AURORA_SECRET_ARN, AURORA_DB_NAME, RESEARCH_TABLE
 terraform-env:
 	@set -e; \
 	mkdir -p $$(dirname $(infra_env_file)); \
@@ -105,15 +111,29 @@ terraform-env:
 	  echo "NEWS_KB_DS_ID=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_data_source_id)"; \
 	  echo "NEWS_KB_BUCKET=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_bucket)"; \
 	  echo "NEWS_KB_PREFIX=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_prefix)"; \
+	  echo "RESEARCH_KB_ID=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw research_kb_id)"; \
+	  echo "RESEARCH_KB_DS_ID=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw research_kb_data_source_id)"; \
+	  echo "RESEARCH_KB_BUCKET=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw research_kb_bucket)"; \
+	  echo "AURORA_CLUSTER_ARN=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw aurora_cluster_arn)"; \
+	  echo "AURORA_SECRET_ARN=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw aurora_secret_arn)"; \
+	  echo "AURORA_DB_NAME=$$({ terraform -chdir=$(TERRAFORM_DIR) output -raw aurora_db_name 2>/dev/null || echo kbdb; })"; \
+	  echo "RESEARCH_TABLE=$$({ terraform -chdir=$(TERRAFORM_DIR) output -raw research_table_name 2>/dev/null || echo public.research_kb; })"; \
 	} > $(infra_env_file); \
 	echo "✅ Wrote $(infra_env_file)"
 
 print-tf-outputs:
-	@echo "aws_region             : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw aws_region)"
-	@echo "news_kb_id             : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_id)"
-	@echo "news_kb_data_source_id : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_data_source_id)"
-	@echo "news_kb_bucket         : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_bucket)"
-	@echo "news_kb_prefix         : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_prefix)"
+	@echo "aws_region               : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw aws_region)"
+	@echo "news_kb_id               : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_id)"
+	@echo "news_kb_data_source_id   : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_data_source_id)"
+	@echo "news_kb_bucket           : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_bucket)"
+	@echo "news_kb_prefix           : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw news_kb_prefix)"
+	@echo "research_kb_id           : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw research_kb_id)"
+	@echo "research_kb_data_source_id   : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw research_kb_data_source_id)"
+	@echo "research_kb_bucket           : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw research_kb_bucket)"
+	@echo "aurora_cluster_arn       : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw aurora_cluster_arn)"
+	@echo "aurora_secret_arn        : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw aurora_secret_arn)"
+	@echo "aurora_db_name           : $$({ terraform -chdir=$(TERRAFORM_DIR) output -raw aurora_db_name 2>/dev/null || echo kbdb; })"
+	@echo "research_table_name      : $$({ terraform -chdir=$(TERRAFORM_DIR) output -raw research_table_name 2>/dev/null || echo public.research_kb; })"
 
 deploy: push terraform-apply terraform-env
 	@echo "✅ Deployment complete."
@@ -127,6 +147,19 @@ update-lambda:
 clean:
 	docker rmi $(IMAGE_NAME):latest || true
 	docker rmi $(REPO_URI):$(TAG) || true
+
+# =========================
+# VALIDATION (market tools env)
+# =========================
+verify-market-env:
+	@set -e; \
+	. $(env_file_path); test -f $(infra_env_file) && . $(infra_env_file) || true; \
+	for v in AWS_REGION NEWS_KB_ID NEWS_KB_BUCKET NEWS_KB_PREFIX RESEARCH_KB_ID AURORA_CLUSTER_ARN AURORA_SECRET_ARN AURORA_DB_NAME RESEARCH_TABLE; do \
+	  val=$$(eval echo \$$$${v}); \
+	  if [ -z "$${val}" ]; then echo "❌ Missing $$v"; MISSING=1; fi; \
+	done; \
+	if [ "$${MISSING:-0}" = "1" ]; then exit 1; fi; \
+	echo "✅ Market tools env looks good."
 
 # =========================
 # DOCKER COMPOSE (wired to Terraform/env)
@@ -153,6 +186,11 @@ compose-run-spark-dbt: compose-up-spark-dbt
         -e NEWS_KB_DS_ID="$$NEWS_KB_DS_ID" \
         -e NEWS_KB_BUCKET="$$NEWS_KB_BUCKET" \
         -e NEWS_KB_PREFIX="$$NEWS_KB_PREFIX" \
+        -e RESEARCH_KB_ID="$$RESEARCH_KB_ID" \
+        -e AURORA_CLUSTER_ARN="$$AURORA_CLUSTER_ARN" \
+        -e AURORA_SECRET_ARN="$$AURORA_SECRET_ARN" \
+        -e AURORA_DB_NAME="$$AURORA_DB_NAME" \
+        -e RESEARCH_TABLE="$$RESEARCH_TABLE" \
         spark-master \
 		/bin/bash -c "/spark_utils/start-thrift-server.sh && /bin/bash"
 
@@ -167,11 +205,18 @@ compose-run-langgraph: compose-up-spark-dbt
         -e NEWS_KB_DS_ID="$$NEWS_KB_DS_ID" \
         -e NEWS_KB_BUCKET="$$NEWS_KB_BUCKET" \
         -e NEWS_KB_PREFIX="$$NEWS_KB_PREFIX" \
+        -e RESEARCH_KB_ID="$$RESEARCH_KB_ID" \
+		-e RESEARCH_KB_DS_ID="$$RESEARCH_KB_DS_ID" \
+		-e RESEARCH_KB_PREFIX="$$RESEARCH_KB_PREFIX" \
+        -e AURORA_CLUSTER_ARN="$$AURORA_CLUSTER_ARN" \
+        -e AURORA_SECRET_ARN="$$AURORA_SECRET_ARN" \
+        -e AURORA_DB_NAME="$$AURORA_DB_NAME" \
+        -e RESEARCH_TABLE="$$RESEARCH_TABLE" \
         langgraph-backend \
         /bin/bash
 
 # =========================
-# PYTHON / DBT (unchanged logic)
+# PYTHON / DBT
 # =========================
 COINS := $(if $(COINS),$(COINS),bitcoin)
 SAFE_COIN_LIST := $(shell echo $(COINS) | tr ',' ' ' | sed 's/\.sql//g' | sed 's/-/_/g')
@@ -267,3 +312,105 @@ test_agents: setup-env
 
 all: download generate-denorm generate-denorm-all-coins generate-semantics generate-all-coins-metrics dbt-run dbt-docs
 	@echo "✅ All tasks completed."
+
+
+.PHONY: clean-iceberg-news clean-aurora-research clean-aurora-news reset-data
+
+# --- Athena defaults (override if needed) ---
+ATHENA_WORKGROUP   ?= primary
+ATHENA_OUTPUT_S3   ?= s3://$(NEWS_KB_BUCKET)/athena-results
+ICEBERG_DB         ?= news_agent
+ICEBERG_NEWS_TABLE ?= cryptoapi_news
+
+# Safety prompt (set CONFIRM=yes to skip)
+CONFIRM ?= no
+
+clean-iceberg-news:
+	@set -euo pipefail
+	@TGT="$(ICEBERG_DB).$(ICEBERG_NEWS_TABLE) (Iceberg via Athena)"; \
+	if [ "$(CONFIRM)" != "yes" ]; then \
+	  read -p "This will DELETE ALL ROWS in $$TGT. Continue? [y/N] " ans; \
+	  case $$ans in y|Y) ;; *) echo "Aborted."; exit 1;; esac; \
+	fi; \
+	if [ -z "$(ICEBERG_DB)" ] || [ -z "$(ICEBERG_NEWS_TABLE)" ]; then echo "❌ ICEBERG_DB/ICEBERG_NEWS_TABLE not set"; exit 1; fi; \
+	SQL="DELETE FROM $(ICEBERG_DB).$(ICEBERG_NEWS_TABLE) WHERE 1=1"; \
+	echo "▶ Submitting Athena query (workgroup: $(ATHENA_WORKGROUP)):"; \
+	echo "   $$SQL"; \
+	# Try WITHOUT ResultConfiguration (works when Managed Query Results are enabled) \
+	set +e; \
+	QID=$$(aws athena start-query-execution \
+	  --work-group "$(ATHENA_WORKGROUP)" \
+	  --query-string "$$SQL" \
+	  --query 'QueryExecutionId' --output text 2>/dev/null); \
+	RC=$$?; set -e; \
+	if [ $$RC -ne 0 ] || [ -z "$$QID" ]; then \
+	  if [ -z "${ATHENA_OUTPUT_S3:-}" ]; then \
+	    echo "⚠️  Managed results failed and ATHENA_OUTPUT_S3 is not set. Set ATHENA_OUTPUT_S3 or configure workgroup results."; \
+	    exit 1; \
+	  fi; \
+	  echo "ℹ️  Retrying with explicit --result-configuration → $(ATHENA_OUTPUT_S3)"; \
+	  QID=$$(aws athena start-query-execution \
+	    --work-group "$(ATHENA_WORKGROUP)" \
+	    --query-string "$$SQL" \
+	    --result-configuration "OutputLocation=$(ATHENA_OUTPUT_S3)" \
+	    --query 'QueryExecutionId' --output text); \
+	fi; \
+	if [ -z "$$QID" ]; then echo "❌ Failed to start Athena query."; exit 1; fi; \
+	echo "   QueryExecutionId: $$QID"; \
+	while true; do \
+	  STATE=$$(aws athena get-query-execution --query-execution-id "$$QID" \
+	    --query 'QueryExecution.Status.State' --output text); \
+	  case "$$STATE" in \
+	    SUCCEEDED) echo "✅ Iceberg table cleared."; break;; \
+	    FAILED|CANCELLED) \
+	      echo "❌ Athena query $$STATE"; \
+	      aws athena get-query-execution --query-execution-id "$$QID" \
+	        --query 'QueryExecution.Status.StateChangeReason' --output text; \
+	      exit 1;; \
+	    *) echo "⏳ $$STATE ..."; sleep 3;; \
+	  esac; \
+	done
+
+clean-aurora-research:
+	@set -euo pipefail
+	@TGT="$(RESEARCH_TABLE) (Aurora Postgres)"; \
+	if [ "$(CONFIRM)" != "yes" ]; then \
+	  read -p "This will DELETE ALL ROWS in $$TGT. Continue? [y/N] " ans; \
+	  case $$ans in y|Y) ;; *) echo "Aborted."; exit 1;; esac; \
+	fi; \
+	if [ -z "$(AURORA_CLUSTER_ARN)" ] || [ -z "$(AURORA_SECRET_ARN)" ] || [ -z "$(AURORA_DB_NAME)" ]; then \
+	  echo "❌ Missing Aurora env (AURORA_CLUSTER_ARN / AURORA_SECRET_ARN / AURORA_DB_NAME)"; exit 1; fi; \
+	if [ -z "$(RESEARCH_TABLE)" ]; then echo "❌ RESEARCH_TABLE is empty"; exit 1; fi; \
+	echo "▶ Deleting from $(RESEARCH_TABLE) ..."; \
+	aws rds-data execute-statement \
+	  --resource-arn "$(AURORA_CLUSTER_ARN)" \
+	  --secret-arn   "$(AURORA_SECRET_ARN)" \
+	  --database     "$(AURORA_DB_NAME)" \
+	  --sql "DELETE FROM $(RESEARCH_TABLE);"; \
+	echo "✅ Aurora research table cleared."
+
+# Optional: set NEWS_TABLE (e.g., public.news_kb) to enable this
+clean-aurora-news:
+	@set -euo pipefail; \
+	if [ -z "$(NEWS_TABLE)" ]; then \
+	  echo "ℹ️  NEWS_TABLE not set; skipping Aurora news delete."; \
+	else \
+	  TGT="$(NEWS_TABLE) (Aurora Postgres)"; \
+	  if [ "$(CONFIRM)" != "yes" ]; then \
+	    read -p "This will DELETE ALL ROWS in $$TGT. Continue? [y/N] " ans; \
+	    case $$ans in y|Y) ;; *) echo "Aborted."; exit 1;; esac; \
+	  fi; \
+	  if [ -z "$(AURORA_CLUSTER_ARN)" ] || [ -z "$(AURORA_SECRET_ARN)" ] || [ -z "$(AURORA_DB_NAME)" ]; then \
+	    echo "❌ Missing Aurora env (AURORA_CLUSTER_ARN / AURORA_SECRET_ARN / AURORA_DB_NAME)"; exit 1; \
+	  fi; \
+	  echo "▶ Deleting from $(NEWS_TABLE) ..."; \
+	  aws rds-data execute-statement \
+	    --resource-arn "$(AURORA_CLUSTER_ARN)" \
+	    --secret-arn   "$(AURORA_SECRET_ARN)" \
+	    --database     "$(AURORA_DB_NAME)" \
+	    --sql "DELETE FROM $(NEWS_TABLE);"; \
+	  echo "✅ Aurora news table cleared."; \
+	fi
+
+reset-data: clean-iceberg-news clean-aurora-research clean-aurora-news
+	@echo "🌱 Done. You’re back to a clean slate."
