@@ -53,6 +53,53 @@ def _require_env() -> None:
     }.items() if not v]
     if missing:
         raise RuntimeError(f"Missing required env: {', '.join(missing)}")
+    
+def _mk_attrs(meta: dict) -> dict:
+    # same structure you already use in sidecars
+    # {"metadataAttributes": {"as_of":{"value":{"type":"STRING","stringValue":"..."}} ...}}
+    return build_kb_sidecar(meta)["metadataAttributes"]
+
+def kb_direct_ingest_news(rows: list[dict]) -> list[dict]:
+    """Directly ingest into the KB; returns list of per-doc results."""
+    results = []
+    batch = []
+    for r in rows:
+        text = _best_fulltext(r)[:240_000]
+        news_id = r["news_id"]
+        as_of_iso = r.get("published_at_iso")
+        as_of_epoch = _iso_to_epoch(as_of_iso)
+
+        raw_meta = _clean_meta({
+            "news_id": news_id,
+            "url": r.get("news_url"),
+            "headline": r.get("title"),
+            "source": r.get("source_name"),
+            "as_of": as_of_iso,
+            "as_of_epoch": as_of_epoch,
+            "symbols": sorted({c.get("symbol") for c in (r.get("currencies") or []) if c.get("symbol")}),
+            "tags": r.get("tags") or _derive_tags(r),
+            "sentiment": r.get("sentiment"),
+        })
+
+        batch.append({
+            "documentId": news_id,                     # <- YOUR stable ID
+            "content": {"text": text},                 # or {"byteContent": ...}
+            "metadataAttributes": _mk_attrs(raw_meta), # same schema you already build
+        })
+
+        if len(batch) == 25:                           # API limit per call
+            resp = _kb_rt.ingest_knowledge_base_documents(
+                knowledgeBaseId=NEWS_KB_ID, documents=batch
+            )
+            results.extend(resp.get("documentResults", []))
+            batch.clear()
+
+    if batch:
+        resp = _kb_rt.ingest_knowledge_base_documents(
+            knowledgeBaseId=NEWS_KB_ID, documents=batch
+        )
+        results.extend(resp.get("documentResults", []))
+    return results
 
 def _s3_key_for_doc(news_id: str) -> str:
     return f"{NEWS_KB_PREFIX}/{news_id}.txt"
@@ -76,24 +123,40 @@ def _best_fulltext(row: dict) -> str:
 
 def build_kb_sidecar(meta: dict) -> dict:
     """
-    Convert simple dict -> Bedrock KB typed 'metadataAttributes' structure.
-    Allowed value types: STRING, NUMBER, BOOLEAN, STRING_LIST.
+    Bedrock S3 sidecar schema:
+      {
+        "metadataAttributes": {
+          "<key>": {
+            "value": {
+              "type": "STRING|NUMBER|BOOLEAN|STRING_LIST",
+              "stringValue" | "numberValue" | "booleanValue" | "stringListValue": ...
+            },
+            "includeForEmbedding": true|false   # optional
+          },
+          ...
+        }
+      }
     """
-    def val(v):
+    def to_attr(v):
         if isinstance(v, bool):
-            return {"type": "BOOLEAN", "booleanValue": v}
+            return {"value": {"type": "BOOLEAN", "booleanValue": v}, "includeForEmbedding": True}
         if isinstance(v, (int, float)) and not isinstance(v, bool):
-            return {"type": "NUMBER", "numberValue": float(v)}
+            return {"value": {"type": "NUMBER", "numberValue": float(v)}, "includeForEmbedding": True}
         if isinstance(v, (list, tuple)):
-            return {"type": "STRING_LIST", "stringListValue": [str(x) for x in v if str(x)]}
-        return {"type": "STRING", "stringValue": str(v)}
-
-    payload = {"metadataAttributes": {}}
+            lst = [str(x) for x in v if str(x)]
+            # Bedrock requires at least 1 item if you provide stringListValue
+            if not lst:
+                return None
+            return {"value": {"type": "STRING_LIST", "stringListValue": lst}, "includeForEmbedding": True}
+        return {"value": {"type": "STRING", "stringValue": str(v)}, "includeForEmbedding": True}
+    out = {"metadataAttributes": {}}
     for k, v in (meta or {}).items():
         if v in (None, "", [], {}):
             continue
-        payload["metadataAttributes"][k] = {"value": val(v)}
-    return payload
+        attr = to_attr(v)
+        if attr:
+            out["metadataAttributes"][k] = attr
+    return out
 
 def _kb_filter(symbols: List[str] | None = None,
                date_from_iso: str | None = None,
@@ -220,6 +283,8 @@ def _iso_to_epoch(iso_str: Optional[str]) -> Optional[int]:
         return int(dt.timestamp())
     except Exception:
         return None
+
+
 
 # --------------- Tools -----------------
 @tool("ensure_iceberg_tables")
@@ -364,6 +429,22 @@ def llm_extract_mentions_tool(title: str = "", source: str = "", url: str = "", 
     except Exception as e:
         logger.info(f"LLM extract failed for {url or title}: {e}")
 
+def _attrs_from_meta(meta: dict) -> list[dict]:
+    """Convert your meta dict to direct-ingest inlineAttributes array."""
+    out = []
+    for k, v in (meta or {}).items():
+        if v in (None, "", [], {}): 
+            continue
+        if isinstance(v, bool):
+            out.append({"key": k, "value": {"type": "BOOLEAN", "booleanValue": v}})
+        elif isinstance(v, (int, float)):
+            out.append({"key": k, "value": {"type": "NUMBER", "numberValue": float(v)}})
+        elif isinstance(v, (list, tuple)):
+            out.append({"key": k, "value": {"type": "STRING_LIST", "stringListValue": [str(x) for x in v if str(x)]}})
+        else:
+            out.append({"key": k, "value": {"type": "STRING", "stringValue": str(v)}})
+    return out
+
 EMBED_MODEL = os.getenv("EMBED_MODEL", "e5-small")
 
 def _norm_for_hash(t: str) -> str:
@@ -385,40 +466,49 @@ def kb_ingest_news_tool(rows: List[dict],
     Returns: {uploaded, ingestion_job_id, status}
     """
     _require_env()
+    _require_env()
     if not rows:
         return {"uploaded": 0, "status": "NOOP"}
 
     uploaded = 0
     for r in rows:
         news_id = r.get("news_id") or sha256((r.get("news_url") or r.get("title") or str(uuid.uuid4())))
-        # 1) Upload TXT (unchanged)
         text = _best_fulltext(r)
 
-        # 2) Upload sidecar — ADD as_of_epoch
-        currencies = r.get("currencies") or []
-        symbols = sorted({c.get("symbol") for c in currencies if isinstance(c, dict) and c.get("symbol")})
-        as_of_iso = r.get("published_at_iso")
+        symbols = sorted({c.get("symbol") for c in (r.get("currencies") or []) if isinstance(c, dict) and c.get("symbol")})
+        as_of_iso   = r.get("published_at_iso")
         as_of_epoch = _iso_to_epoch(as_of_iso)
 
         raw_meta = _clean_meta({
-            "news_id":   news_id,
-            "url":       r.get("news_url"),
-            "headline":  r.get("title"),
-            "source":    r.get("source_name"),
-            "as_of":     as_of_iso,          # keep string for display
-            "as_of_epoch": as_of_epoch,      # NEW: numeric for filtering
-            "symbols":   symbols,
-            "tags":      r.get("tags") or _derive_tags(r),
-            "sentiment": r.get("sentiment"),
+            "news_id":    news_id,
+            "url":        r.get("news_url"),
+            "headline":   r.get("title"),
+            "source":     r.get("source_name"),
+            "as_of":      as_of_iso,          # display string
+            "as_of_epoch":as_of_epoch,        # numeric for filtering
+            "symbols":    symbols,            # string list
+            "tags":       r.get("tags") or _derive_tags(r),
+            "sentiment":  r.get("sentiment"),
         })
         sidecar = build_kb_sidecar(raw_meta)
 
+        # (1) upload the TEXT doc
         _s3.put_object(
             Bucket=NEWS_KB_BUCKET,
-            Key=_s3_key_for_meta(news_id),
+            Key=_s3_key_for_doc(news_id),            # e.g., news/<id>.txt
             Body=(text or "").encode("utf-8"),
-            ContentType="application/json",
+            ContentType="text/plain; charset=utf-8"
         )
+        # (2) upload the SIDECAR JSON
+        sidecar_bytes = json.dumps(sidecar, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(sidecar_bytes) > 10_000:
+            sidecar_bytes = sidecar_bytes[:9_900]  # belt & suspenders; or drop optional fields
+        _s3.put_object(
+            Bucket=NEWS_KB_BUCKET,
+            Key=_s3_key_for_meta(news_id),          # e.g., news/<id>.txt.metadata.json
+            Body=json.dumps(sidecar, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+)
         uploaded += 1
 
     # 3) Start ingestion job
@@ -620,3 +710,202 @@ def merge_hints_and_tokens(text: str, tokens: List[TokenMention]) -> List[Dict[s
         if key not in merged or h.confidence > merged[key].confidence:
             merged[key] = h
     return [{"name": t.name, "symbol": t.symbol, "confidence": float(t.confidence)} for t in merged.values()]
+
+
+@tool("kb_direct_ingest_news_tool")
+def kb_direct_ingest_news_tool(rows: List[dict], batch_size: int = 25) -> dict:
+    """
+    Directly ingest documents into the Bedrock Knowledge Base (no S3 sync).
+    Returns per-document results for precise error reporting.
+
+    Input rows should contain at least:
+      - news_id (str)  [if absent, will be derived]
+      - title, source_name, news_url, published_at_iso (optional)
+      - full_text (optional) or anything _best_fulltext(...) can assemble
+      - currencies (list[dict{name,symbol,confidence}]) (optional)
+      - tags (list[str]) (optional)
+      - sentiment (str) (optional)
+
+    Output:
+      {
+        "results": [
+          {"documentId": "...", "status": "SUCCESS|FAILED", "statusReason": "..."}
+        ],
+        "ok": <int>,
+        "failed": <int>,
+        "took_ms": <int>
+      }
+    """
+    _require_env()
+    if not rows:
+        return {"results": [], "ok": 0, "failed": 0, "took_ms": 0}
+
+    t0 = time.time()
+    results: List[Dict[str, Any]] = []
+
+    def _mk_doc(r: dict) -> dict:
+        # 1) doc id
+        news_id = r.get("news_id") or sha256(
+            (r.get("news_url") or r.get("title") or str(uuid.uuid4()))
+        )
+
+        # 2) content (keep reasonable length)
+        text = (r.get("full_text") or _best_fulltext(r) or "")[:240_000]
+
+        # 3) metadata (same schema as your sidecars)
+        as_of_iso = r.get("published_at_iso")
+        as_of_epoch = _iso_to_epoch(as_of_iso)
+
+        currencies = r.get("currencies") or []
+        symbols = sorted({
+            (c.get("symbol") or "").strip()
+            for c in currencies
+            if isinstance(c, dict) and c.get("symbol")
+        })
+
+        raw_meta = _clean_meta({
+            "news_id":   news_id,
+            "url":       r.get("news_url"),
+            "headline":  r.get("title"),
+            "source":    r.get("source_name"),
+            "as_of":     as_of_iso,
+            "as_of_epoch": as_of_epoch,
+            "symbols":   symbols,
+            "tags":      r.get("tags") or _derive_tags(r),
+            "sentiment": r.get("sentiment"),
+        })
+
+        # Build Bedrock metadataAttributes
+        meta_attrs = build_kb_sidecar(raw_meta).get("metadataAttributes", {})
+
+        # OPTIONAL: mark a couple of fields for embedding signal
+        for k in ("headline", "symbols"):
+            if k in meta_attrs:
+                meta_attrs[k]["includeForEmbedding"] = True
+
+        return {
+            "documentId": news_id,
+            "content": {"text": text},
+            "metadataAttributes": meta_attrs,
+        }
+
+    # assemble docs
+    docs: List[dict] = [_mk_doc(r) for r in rows]
+
+    # 4) send in batches (API limit: 25 docs per call)
+    i = 0
+    while i < len(docs):
+        batch = docs[i:i + int(batch_size or 25)]
+        try:
+            resp = _kb_rt.ingest_knowledge_base_documents(
+                knowledgeBaseId=NEWS_KB_ID,
+                documents=batch,
+            )
+            # Normalize response
+            for d in (resp.get("documentResults") or []):
+                results.append({
+                    "documentId": d.get("documentId"),
+                    "status": d.get("status") or d.get("documentStatus"),
+                    "statusReason": d.get("statusReason") or d.get("reason"),
+                })
+        except Exception as e:
+            # If the batch call itself fails, mark all in the batch as failed with same reason
+            for d in batch:
+                results.append({
+                    "documentId": d.get("documentId"),
+                    "status": "FAILED",
+                    "statusReason": f"{type(e).__name__}: {e}",
+                })
+        i += len(batch)
+
+    ok = sum(1 for r in results if (r.get("status") or "").upper() == "SUCCESS")
+    failed = sum(1 for r in results if (r.get("status") or "").upper() != "SUCCESS")
+
+    return {
+        "results": results,
+        "ok": ok,
+        "failed": failed,
+        "took_ms": int((time.time() - t0) * 1000),
+    }
+
+@tool("kb_direct_ingest_news_tool")
+def kb_direct_ingest_news_tool(rows: List[dict],
+                               data_source_id: Optional[str] = None,
+                               batch_size: int = 25) -> dict:
+    """
+    Directly ingest docs into a KB CUSTOM data source (no S3 sync).
+    Returns per-document statuses.
+    """
+    _require_env()
+    ds_id = data_source_id or NEWS_KB_DS_ID  # must be a CUSTOM data source
+    if not rows:
+        return {"results": [], "ok": 0, "failed": 0}
+
+    docs = []
+    for r in rows:
+        news_id = r.get("news_id") or sha256((r.get("news_url") or r.get("title") or str(uuid.uuid4())))
+
+        text = (r.get("full_text") or _best_fulltext(r) or "")[:240_000]
+
+        as_of_iso   = r.get("published_at_iso")
+        as_of_epoch = _iso_to_epoch(as_of_iso)
+        currencies  = r.get("currencies") or []
+        symbols     = sorted({(c.get("symbol") or "").strip() for c in currencies if isinstance(c, dict) and c.get("symbol")})
+
+        raw_meta = _clean_meta({
+            "news_id":   news_id,
+            "url":       r.get("news_url"),
+            "headline":  r.get("title"),
+            "source":    r.get("source_name"),
+            "as_of":     as_of_iso,
+            "as_of_epoch": as_of_epoch,
+            "symbols":   symbols,
+            "tags":      r.get("tags") or _derive_tags(r),
+            "sentiment": r.get("sentiment"),
+        })
+
+        docs.append({
+            "metadata": {
+                "type": "IN_LINE_ATTRIBUTE",
+                "inlineAttributes": _attrs_from_meta(raw_meta),
+            },
+            "content": {
+                "dataSourceType": "CUSTOM",
+                "custom": {
+                    "customDocumentIdentifier": {"id": news_id},
+                    "sourceType": "IN_LINE",
+                    "inlineContent": {
+                        "type": "TEXT",
+                        "textContent": {"data": text or " "}
+                    }
+                }
+            }
+        })
+
+    results = []
+    i = 0
+    t0 = time.time()
+    while i < len(docs):
+        batch = docs[i:i+batch_size]
+        try:
+            resp = _kb_cp.ingest_knowledge_base_documents(  # <-- CONTROL PLANE
+                knowledgeBaseId=NEWS_KB_ID,
+                dataSourceId=ds_id,
+                documents=batch,
+            )
+            for d in resp.get("documentDetails", []):
+                ident = d.get("identifier", {}).get("custom", {}) or {}
+                results.append({
+                    "documentId": ident.get("id"),
+                    "status": d.get("status"),
+                    "statusReason": d.get("statusReason", "")
+                })
+        except Exception as e:
+            for b in batch:
+                bid = b["content"]["custom"]["customDocumentIdentifier"]["id"]
+                results.append({"documentId": bid, "status": "FAILED", "statusReason": f"{type(e).__name__}: {e}"})
+        i += len(batch)
+
+    ok = sum(1 for r in results if (r.get("status") or "").upper() in {"INDEXED","PENDING","IN_PROGRESS"})
+    failed = sum(1 for r in results if (r.get("status") or "").upper() in {"FAILED","METADATA_UPDATE_FAILED"})
+    return {"results": results, "ok": ok, "failed": failed, "took_ms": int((time.time()-t0)*1000)}

@@ -33,6 +33,33 @@ infra_env_file = env/.env_infra
 -include $(infra_env_file)
 export
 
+# --- LangGraph Image / ECR (built from docker/langgraph/Dockerfile) ---
+LANGGRAPH_IMAGE_NAME ?= news-ingest-langgraph
+LANGGRAPH_DIR        ?= docker/langgraph
+LANGGRAPH_TAG        ?= latest
+
+# If Terraform exports this, we prefer it (see terraform-env below)
+# Fallback: compute the repo URI as <acct>.dkr.ecr.<region>.amazonaws.com/<name>
+LANGGRAPH_ECR_URL    ?= $(ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/$(LANGGRAPH_IMAGE_NAME)
+
+.PHONY: login-langgraph buildimage-langgraph tag-langgraph push-langgraph
+
+login-langgraph:
+	@echo "🔐 ECR login (LangGraph)…"
+	@aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(LANGGRAPH_ECR_URL)
+
+buildimage-langgraph:
+	@echo "🐳 Building LangGraph image (linux/amd64)…"
+	docker build --platform linux/amd64 --provenance=false -t $(LANGGRAPH_IMAGE_NAME) -f $(LANGGRAPH_DIR)/Dockerfile .
+
+tag-langgraph:
+	@echo "🔖 Tagging LangGraph image…"
+	docker tag $(LANGGRAPH_IMAGE_NAME):latest $(LANGGRAPH_ECR_URL):$(LANGGRAPH_TAG)
+
+push-langgraph: login-langgraph buildimage-langgraph tag-langgraph
+	@echo "🚀 Pushing LangGraph image to ECR…"
+	docker push $(LANGGRAPH_ECR_URL):$(LANGGRAPH_TAG)
+
 # =========================
 # PHONY
 # =========================
@@ -87,14 +114,12 @@ terraform-init:
 
 terraform-plan: terraform-init
 	@set -a; . $(env_file_path); set +a; \
-	cd $(TERRAFORM_DIR) && terraform plan \
-	  -var="ingestion_image=$(IMAGE_NAME)"
+	cd $(TERRAFORM_DIR) && terraform plan 
 
 terraform-apply: terraform-init
 	@set -e; \
 	set -a; . $(env_file_path); set +a; \
-	cd $(TERRAFORM_DIR) && terraform apply -auto-approve \
-	  -var="ingestion_image=$(IMAGE_NAME)"
+	cd $(TERRAFORM_DIR) && terraform apply -auto-approve 
 
 # Export TF outputs -> env/.env_infra for runtime:
 #   AWS_REGION,
@@ -118,6 +143,7 @@ terraform-env:
 	  echo "AURORA_SECRET_ARN=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw aurora_secret_arn)"; \
 	  echo "AURORA_DB_NAME=$$({ terraform -chdir=$(TERRAFORM_DIR) output -raw aurora_db_name 2>/dev/null || echo kbdb; })"; \
 	  echo "RESEARCH_TABLE=$$({ terraform -chdir=$(TERRAFORM_DIR) output -raw research_table_name 2>/dev/null || echo public.research_kb; })"; \
+	  echo "NEWS_TABLE=$$({ terraform -chdir=$(TERRAFORM_DIR) output -raw news_table_name 2>/dev/null || echo public.news_kb; })"; \
 	} > $(infra_env_file); \
 	echo "✅ Wrote $(infra_env_file)"
 
@@ -134,6 +160,7 @@ print-tf-outputs:
 	@echo "aurora_secret_arn        : $$(terraform -chdir=$(TERRAFORM_DIR) output -raw aurora_secret_arn)"
 	@echo "aurora_db_name           : $$({ terraform -chdir=$(TERRAFORM_DIR) output -raw aurora_db_name 2>/dev/null || echo kbdb; })"
 	@echo "research_table_name      : $$({ terraform -chdir=$(TERRAFORM_DIR) output -raw research_table_name 2>/dev/null || echo public.research_kb; })"
+	@echo "news_table_name          : $$({ terraform -chdir=$(TERRAFORM_DIR) output -raw news_table_name 2>/dev/null || echo public.news_kb; })"
 
 deploy: push terraform-apply terraform-env
 	@echo "✅ Deployment complete."
@@ -215,103 +242,6 @@ compose-run-langgraph: compose-up-spark-dbt
         langgraph-backend \
         /bin/bash
 
-# =========================
-# PYTHON / DBT
-# =========================
-COINS := $(if $(COINS),$(COINS),bitcoin)
-SAFE_COIN_LIST := $(shell echo $(COINS) | tr ',' ' ' | sed 's/\.sql//g' | sed 's/-/_/g')
-COIN_NAMES := $(shell ls $(MODELS_DIR)/denorm_*_history.sql 2>/dev/null | sed -E "s|.*/denorm_(.*)_history\.sql$$|\1|")
-SEMANTIC_TARGETS := $(patsubst %, $(MODELS_DIR)/%_semantic.yml, $(SAFE_COIN_LIST))
-
-setup-env: $(VENV_DIR)/bin/activate
-
-$(VENV_DIR)/bin/activate: requirements.txt
-	@echo "Creating virtual environment in $(VENV_DIR)…"
-	python3 -m venv $(VENV_DIR)
-	@echo "Virtual environment created."
-	@echo "Installing dependencies…"
-	./$(VENV_DIR)/bin/pip install --upgrade pip
-	./$(VENV_DIR)/bin/pip install -r requirements.txt
-	touch $(VENV_DIR)/bin/activate
-
-install-requirements: setup-env
-
-run: setup-env
-	./$(VENV_DIR)/bin/python fetch_coin_history.py --coins $(COINS)
-
-generate-semantics: setup-env $(SEMANTIC_TARGETS)
-	@echo "All semantic files generated/overwritten."
-
-$(MODELS_DIR)/%_semantic.yml: $(MODELS_DIR)/denorm_%_history.sql semantic_template.yml
-	@echo "Generating semantic file for coin: $*"
-	mkdir -p $(MODELS_DIR)
-	sed 's/{{COIN}}/$*/g' semantic_template.yml > $@
-	@echo "Created/overwritten $@ from template."
-
-DENORM_TARGETS := $(patsubst %, $(MODELS_DIR)/denorm_%_history.sql, $(SAFE_COIN_LIST))
-
-generate-denorm: setup-env $(DENORM_TARGETS)
-	@echo "All per-coin denormalized model files generated/overwritten."
-
-$(MODELS_DIR)/denorm_%_history.sql: denorm_template.sql
-	@echo "Generating denorm file for coin: $*"
-	mkdir -p $(MODELS_DIR)
-	safe_coin=$$(echo "$*" | sed 's/-/_/g'); \
-	sed "s/{{COIN}}/$$safe_coin/g" denorm_template.sql > $@
-	@echo "Created/overwritten $@ from template."
-
-generate-denorm-all-coins: setup-env $(MODELS_DIR)/denorm_all_coins.sql
-	@echo "Master denormalized model for all coins generated/overwritten."
-
-$(MODELS_DIR)/denorm_all_coins.sql: master_coin_denorm.sql
-	@echo "Generating master denormalized model from template…"
-	mkdir -p $(MODELS_DIR)
-	@COIN_UNION=$$(for coin in $(SAFE_COIN_LIST); do \
-		echo "select *, '$${coin}' as coin from $${coin}_history"; \
-	done | paste -sd " UNION ALL " -); \
-	echo "COIN_UNION is: $$COIN_UNION"; \
-	sed -e "s|{{COIN_UNION}}|$$COIN_UNION|g" master_coin_denorm.sql > $(MODELS_DIR)/denorm_all_coins.sql; \
-	echo "Created/overwritten $(MODELS_DIR)/denorm_all_coins.sql from template."
-
-generate-all-coins-metrics: setup-env $(MODELS_DIR)/all_coins_metrics.yml
-	@echo "All coins metrics file generated/overwritten."
-$(MODELS_DIR)/all_coins_metrics.yml: render_template.py templates/all_coins_metrics_template.yml
-	@echo "Generating all_coins_metrics.yml using render_template.py…"
-	./$(VENV_DIR)/bin/python render_template.py
-
-download: setup-env
-	@echo "Downloading coin data for coins: $(COINS)…"
-	./$(VENV_DIR)/bin/python fetch_coin_history.py --coins $(COINS)
-
-dbt-deps: setup-env
-	@echo "Installing dbt packages…"
-	@cd $(DBT_DIR) && ../$(VENV_DIR)/bin/dbt deps
-
-dbt-run: dbt-deps
-	@echo "Running dbt models…"
-	@cd $(DBT_DIR) && \
-	if [ -f dbt_project.yml ]; then \
-		../$(VENV_DIR)/bin/dbt run --profiles-dir $$DBT_PROFILES_DIR; \
-	else \
-		echo "Error: No dbt_project.yml found at $(DBT_DIR)/dbt_project.yml"; \
-		exit 1; \
-	fi
-
-dbt-docs: dbt-deps
-	@echo "Generating dbt docs…"
-	@cd $(DBT_DIR) && \
-	if [ -f dbt_project.yml ]; then \
-		../$(VENV_DIR)/bin/dbt docs generate; \
-	else \
-		echo "Error: No dbt_project.yml found at $(DBT_DIR)/dbt_project.yml"; \
-		exit 1; \
-	fi
-
-test_agents: setup-env
-	PYTHONPATH=$(CURDIR)/coin_crew pytest coin_crew/tests/db
-
-all: download generate-denorm generate-denorm-all-coins generate-semantics generate-all-coins-metrics dbt-run dbt-docs
-	@echo "✅ All tasks completed."
 
 
 .PHONY: clean-iceberg-news clean-aurora-research clean-aurora-news reset-data
@@ -414,3 +344,86 @@ clean-aurora-news:
 
 reset-data: clean-iceberg-news clean-aurora-research clean-aurora-news
 	@echo "🌱 Done. You’re back to a clean slate."
+
+# =========================
+# S3 cleanup for Bedrock KB source
+# =========================
+# Env expected:
+#   NEWS_KB_BUCKET   (e.g., jj-news-kb)
+#   NEWS_KB_PREFIX   (e.g., news)  # don't include leading slash
+# Optional:
+#   CONFIRM=yes      # skip interactive prompt
+#   DRYRUN=yes       # preview only
+#   DT=YYYY-MM-DD    # for partitioned paths news/dt=YYYY-MM-DD/
+#   BEFORE_ISO=YYYY-MM-DDTHH:MM:SSZ  # delete keys last-modified on/before this timestamp
+#
+# Notes:
+# - Deleting S3 objects removes them from the KB on the next ingestion sync.
+# - If you haven’t partitioned yet, use clean-kb-s3 (everything under prefix).
+# - If you *have* partitioned by date (news/dt=YYYY-MM-DD/), use clean-kb-s3-dt.
+
+.PHONY: clean-kb-s3 clean-kb-s3-dt clean-kb-s3-before list-kb-s3
+
+list-kb-s3:
+	@set -euo pipefail; \
+	if [ -z "$(NEWS_KB_BUCKET)" ]; then echo "❌ NEWS_KB_BUCKET not set"; exit 1; fi; \
+	PFX="$${NEWS_KB_PREFIX:-news}"; PFX="$${PFX%/}"; \
+	echo "▶ Counting objects under s3://$(NEWS_KB_BUCKET)/$${PFX}/ ..."; \
+	aws s3api list-objects-v2 --bucket "$(NEWS_KB_BUCKET)" --prefix "$${PFX}/" \
+	  --query "length(Contents)" --output text
+
+clean-kb-s3:
+	@set -euo pipefail; \
+	if [ -z "$(NEWS_KB_BUCKET)" ]; then echo "❌ NEWS_KB_BUCKET not set"; exit 1; fi; \
+	PFX="$${NEWS_KB_PREFIX:-news}"; PFX="$${PFX%/}"; \
+	TGT="s3://$(NEWS_KB_BUCKET)/$${PFX}/"; \
+	if [ "$(CONFIRM)" != "yes" ]; then \
+	  read -p "This will DELETE ALL objects under $$TGT. Continue? [y/N] " ans; \
+	  case $$ans in y|Y) ;; *) echo "Aborted."; exit 1;; esac; \
+	fi; \
+	if [ "$${DRYRUN:-no}" = "yes" ]; then DR="--dryrun"; else DR=""; fi; \
+	echo "▶ Deleting $$TGT $$DR"; \
+	aws s3 rm "$$TGT" --recursive $$DR; \
+	echo "✅ S3 prefix cleared (or dry-run)."
+
+# Use this if you store docs under news/dt=YYYY-MM-DD/<id>.txt (+ .metadata.json)
+clean-kb-s3-dt:
+	@set -euo pipefail; \
+	if [ -z "$(NEWS_KB_BUCKET)" ]; then echo "❌ NEWS_KB_BUCKET not set"; exit 1; fi; \
+	if [ -z "${DT:-}" ]; then echo "❌ Set DT=YYYY-MM-DD"; exit 1; fi; \
+	PFX="$${NEWS_KB_PREFIX:-news}"; PFX="$${PFX%/}"; \
+	TGT="s3://$(NEWS_KB_BUCKET)/$${PFX}/dt=$(DT)/"; \
+	if [ "$(CONFIRM)" != "yes" ]; then \
+	  read -p "This will DELETE ALL objects under $$TGT. Continue? [y/N] " ans; \
+	  case $$ans in y|Y) ;; *) echo "Aborted."; exit 1;; esac; \
+	fi; \
+	if [ "$${DRYRUN:-no}" = "yes" ]; then DR="--dryrun"; else DR=""; fi; \
+	echo "▶ Deleting $$TGT $$DR"; \
+	aws s3 rm "$$TGT" --recursive $$DR; \
+	echo "✅ Partition $$TGT cleared (or dry-run)."
+
+# Delete only objects last-modified on/before BEFORE_ISO (requires jq)
+clean-kb-s3-before:
+	@set -euo pipefail; \
+	if [ -z "$(NEWS_KB_BUCKET)" ]; then echo "❌ NEWS_KB_BUCKET not set"; exit 1; fi; \
+	if [ -z "${BEFORE_ISO:-}" ]; then echo "❌ Set BEFORE_ISO=YYYY-MM-DDTHH:MM:SSZ"; exit 1; fi; \
+	if ! command -v jq >/dev/null 2>&1; then echo "❌ Requires jq"; exit 1; fi; \
+	PFX="$${NEWS_KB_PREFIX:-news}"; PFX="$${PFX%/}"; \
+	echo "▶ Selecting objects under s3://$(NEWS_KB_BUCKET)/$${PFX}/ with LastModified <= $(BEFORE_ISO)"; \
+	KEYS=$$(aws s3api list-objects-v2 --bucket "$(NEWS_KB_BUCKET)" --prefix "$${PFX}/" \
+	  --query "Contents[?LastModified<=\`$(BEFORE_ISO)\`].Key" --output json); \
+	COUNT=$$(echo "$$KEYS" | jq 'length'); \
+	echo "Found $$COUNT objects."; \
+	if [ "$$COUNT" -eq 0 ]; then exit 0; fi; \
+	if [ "$(CONFIRM)" != "yes" ]; then \
+	  read -p "Proceed to delete $$COUNT objects? [y/N] " ans; \
+	  case $$ans in y|Y) ;; *) echo "Aborted."; exit 1;; esac; \
+	fi; \
+	if [ "$${DRYRUN:-no}" = "yes" ]; then \
+	  echo "$$KEYS" | jq -r '.[]'; echo "DRYRUN=yes → not deleting."; exit 0; \
+	fi; \
+	TMP=$$(mktemp); echo "$$KEYS" | jq -c '{Objects: map({Key:.}), Quiet:true}' > $$TMP; \
+	aws s3api delete-objects --bucket "$(NEWS_KB_BUCKET)" --delete file://$$TMP; \
+	rm -f $$TMP; \
+	echo "✅ Deleted $$COUNT objects."
+

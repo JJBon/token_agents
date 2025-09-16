@@ -2,8 +2,12 @@ terraform {
   required_version = ">= 1.6"
 }
 
-provider "aws" {
+locals {
   region = "us-east-1"
+}
+
+provider "aws" {
+  region = local.region
 }
 
 provider "awscc" { region = "us-east-1" }
@@ -445,3 +449,68 @@ module "kb_news_pg" {
 # Example S3 buckets for the two Kbs:
 resource "aws_s3_bucket" "research_docs" { bucket = "${var.s3_naming_prefix}-research-kb" }
 resource "aws_s3_bucket" "news_docs" { bucket = "${var.s3_naming_prefix}-news-kb" } 
+
+
+module "ecs_news_ingest" {
+  source = "./modules/ecs_fargate_task"
+
+  name_prefix        = "news-ingest"
+  vpc_id             = data.aws_vpc.selected.id
+  subnet_ids         = data.aws_subnets.private.ids
+
+  ecr_image_url = aws_ecr_repository.news_ingest_langgraph.repository_url     # from your existing ECR repo
+
+  env_vars = {
+    AWS_REGION              = local.region
+    S3_BUCKET               = aws_s3_bucket.coingecko_data.bucket  
+    GLUE_DATABASE           = "news_agent"
+    NEWS_KB_ID              = module.kb_news_pg.kb_id
+    NEWS_KB_DS_ID           = module.kb_news_pg.data_source_id
+    NEWS_KB_BUCKET          = aws_s3_bucket.news_docs.bucket
+    NEWS_KB_PREFIX          = "news/"
+    RESEARCH_KB_ID          = module.kb_research_pg.kb_id
+    AURORA_CLUSTER_ARN      = module.aurora_pg.cluster_arn
+    AURORA_SECRET_ARN       = module.aurora_pg.secret_arn
+    AURORA_DB_NAME          = module.aurora_pg.db_name
+    RESEARCH_TABLE          = "public.research_kb"
+    CRYPTONEWS_URL          = var.cryptonews_url   # or inject via secrets_mgr_arns
+    MAX_ARTICLES            = "50"
+    TIMEOUT_S               = "15"
+    EXTRACTOR_TEMPERATURE   = "0.3"
+    WAIT_FOR_INGEST         = "true"
+    ATHENA_USE_MANAGED_RESULTS = "true"
+  }
+
+  secrets_mgr_arns = {
+    CRYPTONEWS_TOKEN = aws_secretsmanager_secret.cryptonews_token.arn
+  }
+
+
+  s3_bucket_arns = [
+    "arn:aws:s3:::${aws_s3_bucket.news_docs.bucket}",
+  ]
+}
+
+
+module "sfn_run_news" {
+  source = "./modules/sfn_ecs_runner"
+
+  name_prefix               = "news-ingest"
+  ecs_cluster_arn           = module.ecs_news_ingest.cluster_arn
+  ecs_task_definition_arn   = module.ecs_news_ingest.task_definition_arn
+  subnet_ids                = data.aws_subnets.private.ids
+  vpc_id                    = data.aws_vpc.selected.id
+  assign_public_ip          = false
+  cidr_block                = data.aws_vpc.selected.cidr_block  # usually empty; SFN connects via service role + secret 
+
+  notification_email        = var.alert_email
+
+  # Daily at 06:00 America/Bogota
+  schedule_cron             = "cron(0 6 * * ? *)"
+  schedule_timezone         = "America/Bogota"
+
+  tags = {
+    Project = "NewsIngest"
+    Owner   = "Data"
+  }
+}

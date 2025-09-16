@@ -6,11 +6,6 @@ variable "region" {
 }
 
 
-variable "ingestion_image" {
-  type        = string
-  description = "description"
-}
-
 variable "s3_naming_prefix" {
   type        = string
   description = "description"
@@ -29,3 +24,13 @@ variable "kb_vector_dimension" {
   description = "Vector dimension (Titan v2 default = 1024)"
 }
 
+variable "cryptonews_url" {
+  type = string
+  default = "https://cryptonews-api.com/api/v1/category?section=general&items=50&page=2"
+}
+
+variable "alert_email" {
+  type        = string
+  description = "Email address to send alerts to (via SNS)"
+  default     = ""
+}
