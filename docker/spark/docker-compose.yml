@@ -1,6 +1,6 @@
 services:
   # -----------------------------
-  # Spark Master
+  # Spark Master (unchanged)
   # -----------------------------
   spark-master:
     stdin_open: true
@@ -22,24 +22,122 @@ services:
       - ../../docker/spark/spark-utils/hive-site.xml:/etc/spark/conf/hive-site.xml
 
   # -----------------------------
+  # LiteLLM (NEW)
+  # -----------------------------
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: spark-litellm-1
+    command: ["--config", "/app/config.yaml"]
+    ports:
+      - "4000:4000"
+    volumes:
+      - ../../docker/litellm/config.yaml:/app/config.yaml:ro
+    env_file:
+      - ../../env/.env_litellm  # put AWS creds + region here
+    depends_on:
+      - postgres
+    # healthcheck:
+    #   test: ["CMD", "wget", "-qO-", "http://localhost:4000"]
+    #   interval: 10s
+    #   timeout: 3s
+    #   retries: 10
+
+  postgres:
+    image: postgres:16
+    ports:
+      - "5432:5432" 
+    environment:
+      - POSTGRES_USER=litellm
+      - POSTGRES_PASSWORD=litellm
+      - POSTGRES_DB=litellmdb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # -----------------------------
   # Langgraph Backend
   # -----------------------------
   langgraph-backend:
     stdin_open: true
     tty: true
+    platform: linux/amd64
     build:
       context: ../..
       dockerfile: ./docker/langgraph/Dockerfile
-    entrypoint: /bin/sh
+      #command: >
+       #"bentoml serve feedback_agent_service:latest --host 0.0.0.0 --port 8000"
     ports:
       - "7860:7860"
       - "2024:2024"
+      - "8000:8000"
     volumes:
       - ../../docker/langgraph/app:/app
       - /var/run/docker.sock:/var/run/docker.sock
       - ../../dbt/coin_spark:/dbt/coin_spark
       - ../../dbt/profiles.yml:/dbt/profiles/profiles.yml
+      - ../../tests:/tests  # Mount tests directory for easy testing
+      - ../../pytest.ini:/pytest.ini  # Mount pytest config
     env_file:
       - ../../env/.env_dev_langgraph
-    network_mode: host
-    
+    depends_on:
+      - litellm
+      - dbt-mcp
+
+  # -----------------------------
+  # dbt-mcp server (MCP) 
+  # -----------------------------
+  dbt-mcp:
+    stdin_open: true
+    tty: true
+    build:
+      context: ../..
+      dockerfile: ./docker/tools/query_mcp/Dockerfile
+    command: >
+      python mcp_tools.py
+    ports:
+      - "8001:8001"
+    volumes:
+      - ../../docker/tools/query_mcp:/app
+      - ../../dbt/coin_spark:/dbt/coin_spark
+      - ../../dbt/profiles.yml:/dbt/profiles/profiles.yml
+    env_file:
+      - ../../env/.env_dev_dbt_mcp
+
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: openwebui
+    ports:
+      - "3000:8080"   
+    env_file:
+      - ../../env/.env_openwebui
+    depends_on:
+      - litellm
+      - langgraph-backend
+      - openwebui-pipelines
+    volumes:
+      - openwebui_data:/app/backend/data
+    restart: unless-stopped
+
+
+  openwebui-pipelines:
+    #image: ghcr.io/open-webui/pipelines:main
+    build:
+      context: ../..
+      dockerfile: ./docker/openwebui/Dockerfile
+    container_name: openwebui-pipelines
+    ports:
+      - "9099:9099"                           # remote pipeline server
+    environment:
+      - PIPELINES_DIR=/app/pipelines 
+      - PIPELINES_API_KEY=0p3n-w3bu!       # where it scans for pipelines
+      - LOG_LEVEL=INFO
+      - PYTHONPATH=/app/pipelines/synth_module     # so it can find custom modules
+    volumes:
+      - ../../docker/openwebui/pipelines:/app/pipelines
+    depends_on:
+      - langgraph-backend
+      - litellm
+    restart: unless-stopped
+
+volumes:
+  pgdata: {}
+  openwebui_data: {}

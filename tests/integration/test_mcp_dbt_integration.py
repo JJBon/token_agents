@@ -25,7 +25,17 @@ def wait_for_mcp_server(max_attempts=10):
     """Wait for MCP server to be ready."""
     for i in range(max_attempts):
         try:
-            response = requests.get("http://localhost:8001/health", timeout=5)
+            # Try to call a simple tool to verify MCP is working
+            payload = {
+                "jsonrpc": "2.0",
+                "method": "tools/list",
+                "id": 1
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            }
+            response = requests.post("http://localhost:8001/mcp", json=payload, headers=headers, timeout=5)
             if response.status_code == 200:
                 return True
         except requests.exceptions.RequestException:
@@ -45,7 +55,11 @@ def call_mcp_tool(tool_name: str, arguments: dict = None, timeout=TIMEOUT):
         },
         "id": 1
     }
-    response = requests.post(MCP_URL, json=payload, timeout=timeout)
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream"
+    }
+    response = requests.post(MCP_URL, json=payload, headers=headers, timeout=timeout)
     response.raise_for_status()
     return response.json()
 

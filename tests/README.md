@@ -23,6 +23,9 @@ tests/
 # Start all required services
 docker-compose -f docker/spark/docker-compose.yml up -d
 
+# Start Spark Thrift Server (required for dbt/MCP)
+make compose-run-spark-dbt
+
 # Wait for services to be ready (30-60 seconds)
 sleep 60
 
@@ -32,19 +35,19 @@ docker-compose -f docker/spark/docker-compose.yml ps
 
 ### 2. Run Tests
 
+**Important**: Tests must run inside the Docker container where all dependencies are installed.
+
 ```bash
-# Run all tests
-pytest tests/ -v
+# Run integration tests (recommended)
+docker-compose -f docker/spark/docker-compose.yml exec -T langgraph-backend \
+    pytest /tests/integration/test_query_agent_simple.py -v -s -m integration
 
-# Run specific test level
-pytest tests/integration/ -v          # Integration tests only
-pytest tests/e2e/ -v                  # E2E tests only
-
-# Run with output
-pytest tests/integration/ -v -s       # Show print statements
+# Or use the helper script
+./scripts/run_tests_in_docker.sh tests/integration/test_query_agent_simple.py
 
 # Run specific test
-pytest tests/integration/test_mcp_dbt_integration.py::TestMCPTools::test_fetch_metrics -v
+docker-compose -f docker/spark/docker-compose.yml exec -T langgraph-backend \
+    pytest /tests/integration/test_query_agent_simple.py::test_mcp_tools_available -v -s -m integration
 ```
 
 ### 3. Interactive Testing
