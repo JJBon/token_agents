@@ -196,7 +196,7 @@ compose-build-spark-dbt:
 		-f $(COMPOSE_FILE) build \
 		--build-arg ENVIRONMENT="$(ENVIRONMENT)" --parallel
 
-compose-up-spark-dbt: terraform-apply terraform-env compose-build-spark-dbt
+compose-up-spark-dbt: terraform-apply terraform-env #compose-build-spark-dbt
 	docker-compose -f $(COMPOSE_FILE) up --always-recreate-deps -d
 
 compose-down-spark-dbt:

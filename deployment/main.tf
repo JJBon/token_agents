@@ -514,3 +514,43 @@ module "sfn_run_news" {
     Owner   = "Data"
   }
 }
+
+module "cognito_auth" {
+  source = "./modules/cognito" # ← change to your module path
+  region = var.region
+  user_pool_name = "${var.s3_naming_prefix}-user-pool"
+  project_prefix = var.s3_naming_prefix
+
+
+  identity_pool_name = "${var.s3_naming_prefix}-identity-pool"
+
+
+  create_hosted_ui_domain = true
+  hosted_ui_domain_prefix = "${var.s3_naming_prefix}-cog-demo-auth" # must be globally unique
+
+
+  callback_urls = [
+  "http://localhost:3000/oauth/callback"
+  ]
+  logout_urls = [
+    "http://localhost:3000/logout",
+    "http://localhost:3000/"
+  ]
+
+
+  supported_identity_providers = ["COGNITO"]
+
+
+  enable_bedrock_invoke = true
+  bedrock_model_arns = [
+  # Example Sonnet in us-east-1 — replace with what you actually allow
+  "arn:aws:bedrock:us-east-1:123456789012:model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+  ]
+
+
+  attach_basic_logs = true
+
+
+  # Optional: map users in the "admins" group to a different role
+
+}

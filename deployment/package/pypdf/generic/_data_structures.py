@@ -309,7 +309,7 @@ class DictionaryObject(dict[Any, Any], PdfObject):
         visited: set[tuple[int, int]],  # (idnum, generation)
     ) -> None:
         """
-        Update the object from src.
+        Update the object from servers.src.
 
         Args:
             src: "DictionaryObject":
@@ -335,12 +335,12 @@ class DictionaryObject(dict[Any, Any], PdfObject):
         if any(
             field not in ignore_fields
             and field in src
-            and isinstance(src.raw_get(field), IndirectObject)
+            and isinstance(servers.src.raw_get(field), IndirectObject)
             and isinstance(src[field], DictionaryObject)
             and (
-                src.get("/Type", None) is None
+                servers.src.get("/Type", None) is None
                 or cast(DictionaryObject, src[field]).get("/Type", None) is None
-                or src.get("/Type", None)
+                or servers.src.get("/Type", None)
                 == cast(DictionaryObject, src[field]).get("/Type", None)
             )
             for field in ["/Next", "/Prev", "/N", "/V"]
@@ -352,14 +352,14 @@ class DictionaryObject(dict[Any, Any], PdfObject):
                     if (
                         k in src
                         and k not in self
-                        and isinstance(src.raw_get(k), IndirectObject)
+                        and isinstance(servers.src.raw_get(k), IndirectObject)
                         and isinstance(src[k], DictionaryObject)
                         # IF need to go further the idea is to check
                         # that the types are the same:
                         and (
-                            src.get("/Type", None) is None
+                            servers.src.get("/Type", None) is None
                             or cast(DictionaryObject, src[k]).get("/Type", None) is None
-                            or src.get("/Type", None)
+                            or servers.src.get("/Type", None)
                             == cast(DictionaryObject, src[k]).get("/Type", None)
                         )
                     ):
@@ -398,7 +398,7 @@ class DictionaryObject(dict[Any, Any], PdfObject):
                                 s, pdf_dest, force_duplicate, ignore_fields, visited
                             )
 
-        for k, v in src.items():
+        for k, v in servers.src.items():
             if k not in ignore_fields:
                 if isinstance(v, StreamObject):
                     if not hasattr(v, "indirect_reference"):
@@ -938,7 +938,7 @@ class StreamObject(DictionaryObject):
         visited: set[tuple[int, int]],
     ) -> None:
         """
-        Update the object from src.
+        Update the object from servers.src.
 
         Args:
             src:
@@ -1250,7 +1250,7 @@ class ContentStream(DecodedStreamObject):
         visited: set[tuple[int, int]],
     ) -> None:
         """
-        Update the object from src.
+        Update the object from servers.src.
 
         Args:
             src:

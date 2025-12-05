@@ -1,0 +1,25 @@
+general_settings:
+  require_api_key: true
+  master_key: sk-master-123
+  database_url: postgresql://litellm:litellm@postgres:5432/litellmdb
+model_list:
+  - model_name: bedrock-claude-haiku
+    litellm_params:
+      model: bedrock/anthropic.claude-3-haiku-20240307-v1:0
+      aws_region_name: us-east-1
+  - model_name: feedback-agent
+    litellm_params:
+      model: openai/feedback-agent             # dummy label LiteLLM expects
+      custom_llm_provider: openai
+      api_base: http://langgraph-backend:8000/v1
+      api_key: sk-bento 
+      api_type: openai              # can be anything unless you add auth
+      custom_llm_provider: openai
+
+litellm_settings:
+  modify_params: true
+  drop_params: true
+
+general_settings:
+  store_model_in_db: true
+  store_prompts_in_spend_logs: true

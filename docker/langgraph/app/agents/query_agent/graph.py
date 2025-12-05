@@ -1,175 +1,172 @@
-import asyncio
-import uuid
-from typing import Annotated, TypedDict, List, Any, Union, Dict
-
-import boto3
+# graph_mcp.py
+import os, json, asyncio, hashlib, boto3
+from typing import Annotated, List, Any, Dict, Optional, Tuple, Union
 from pydantic import BaseModel, Field
-from langchain_aws import ChatBedrockConverse
-from langchain_core.messages import HumanMessage
+
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableLambda, RunnableConfig
+from langchain_core.runnables import RunnableLambda
 
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import StateGraph, START
+from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import ToolNode
+
+from langchain_openai import ChatOpenAI
+from langchain_aws import ChatBedrockConverse
+
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools  # noqa: F401
+
+# from langfuse.langchain import CallbackHandler
+# lf_handler = CallbackHandler()
 
 from prompts.prompts import query_agent_system_prompt
-from docker.langgraph.app.tools.query_tools.dbt_tools import (
-    fetch_metrics_tool,
-    create_query_tool,
-    fetch_query_result_tool,
-    search_dimension_values_tool,
-)
-
-# optional tracing handler
-
-class State(TypedDict):
-        messages: Annotated[List[Any], add_messages]
-
-def build_graph(config: RunnableConfig = None):
-    config = config or {}
-    model = config.get("model", "anthropic.claude-3-haiku-20240307-v1:0")
-    provider = config.get("provider", "anthropic")
-    temperature = config.get("temperature", 0.0)
-    bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
-    llm = ChatBedrockConverse(
-        model=model, provider=provider, temperature=temperature, client=bedrock
-    )
-
-    tools = [
-        fetch_metrics_tool,
-        create_query_tool,
-        fetch_query_result_tool,
-        search_dimension_values_tool,
-    ]
-    
-    system_prompt=query_agent_system_prompt.prompt
-
-  
-    llm_with_tools = llm.bind_tools(tools)
-
-    # --- Prompt ---
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", f"{system_prompt}"),
-            ("placeholder", "{messages}"),
-        ]
-    )
-    query_agent_chain = prompt | llm_with_tools
-
-    # --- State ---
 
 
-    # --- Node ---
-    async def query_agent(state: State, config: RunnableConfig):
-        response = await query_agent_chain.ainvoke(
-            {"messages": state["messages"]},
-            config=config,
+# ---------- helpers ----------
+def _mcp_servers_from_env() -> Dict[str, Dict[str, Any]]:
+    mode = os.getenv("MCP_MODE", "stdio").lower()
+    if mode == "streamable_http":
+        base = os.getenv("MCP_DBT_URL", "http://dbt-mcp:8001").rstrip("/")
+        path = os.getenv("MCP_DBT_PATH", "/mcp")
+        return {"dbt": {"url": f"{base}{path}", "transport": "streamable_http"}}
+    return {
+        "dbt": {
+            "command": os.getenv("MCP_DBT_CMD", "python"),
+            "args": [os.getenv("MCP_DBT_SCRIPT", "/app/tools/query_tools/mcp_tools.py")],
+            "transport": "stdio",
+            "cwd": os.getenv("MCP_DBT_CWD", "/app"),
+            "env": dict(os.environ),
+        }
+    }
+
+async def _load_all_mcp_tools():
+    return await MultiServerMCPClient(_mcp_servers_from_env()).get_tools()
+
+async def build_llm(model: str, temperature: float):
+    mode = os.getenv("LLM_MODE", "bedrock").lower()
+    if mode == "litellm":
+        return ChatOpenAI(
+            model=os.getenv("LITELLM_MODEL_NAME", "bedrock-claude-haiku"),
+            base_url=os.getenv("LITELLM_BASE_URL"),
+            api_key=os.getenv("LITELLM_API_KEY", "sk-noop"),
+            temperature=temperature,
+            timeout=60,
         )
-        return {"messages": [response]}
+    # Bedrock default
+    client = await asyncio.to_thread(
+        boto3.client, "bedrock-runtime", region_name=os.getenv("AWS_REGION", "us-east-1")
+    )
+    return ChatBedrockConverse(
+        model=model,
+        provider=os.getenv("BEDROCK_PROVIDER", "anthropic"),
+        temperature=temperature,
+        client=client,
+    )
 
-    # --- Graph assembly ---
+# ---------- state ----------
+class State(dict):
+    messages: Annotated[List[Any], add_messages]
+
+# Minimal Bedrock hygiene: if user sends a new Human *immediately after*
+# an AI tool_use (without tool_result yet), drop that trailing Human for this tick.
+def _sanitize_for_bedrock(history: List[BaseMessage]) -> List[BaseMessage]:
+    if not history:
+        return history
+    # find last AI with tool_calls
+    idx = next((i for i in range(len(history)-1, -1, -1)
+                if isinstance(history[i], AIMessage) and getattr(history[i], "tool_calls", None)), None)
+    if idx is None:
+        return history
+    # if any Human appears after that AI before we see a tool message → drop last Human (one turn delay)
+    for j in range(idx + 1, len(history)):
+        m = history[j]
+        if getattr(m, "type", "") == "tool":
+            return history
+        if isinstance(m, HumanMessage) and j == len(history) - 1:
+            return history[:-1]
+    return history
+
+# ---------- graph ----------
+async def build_graph(config: Optional[Dict] = None):
+    cfg = config or {}
+    llm = await build_llm(
+        model=cfg.get("model", "anthropic.claude-3-haiku-20240307-v1:0"),
+        temperature=cfg.get("temperature", 0.0),
+    )
+    tools = await _load_all_mcp_tools()
+
+    tool_policy = """\
+You have external tools via MCP. Prefer: fetch_metrics → create_query → fetch_query_result.
+Avoid repeating the same tool call with the same arguments. Produce final answer clearly."""
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", f"{query_agent_system_prompt.prompt}\n\n{tool_policy}"),
+        ("placeholder", "{messages}"),
+    ])
+
+    llm_with_tools = llm.bind_tools(tools, tool_choice="auto")
+    chain = prompt | llm_with_tools
+
+    async def query_agent(state: State, config):
+        history: List[BaseMessage] = state.get("messages") or []
+        if not history or getattr(history[0], "type", "") != "human":
+            history = [HumanMessage(content=" ")] + list(history)
+        history = _sanitize_for_bedrock(history)
+        resp = await chain.ainvoke({"messages": history}, config=config)
+        return {"messages": [resp]}
+
+    def to_tools_or_end(state: State):
+        # route to tools only if latest AI proposed tool_calls
+        for m in reversed(state.get("messages", [])):
+            if isinstance(m, AIMessage):
+                return "tools" if getattr(m, "tool_calls", None) else END
+        return END
+
     memory = MemorySaver()
-    graph_builder = StateGraph(State)
-    graph_builder.add_node("query_agent", query_agent)
-    tool_node = ToolNode(tools=tools)
-    graph_builder.add_node("tools", tool_node)
-    graph_builder.add_conditional_edges("query_agent", tools_condition)
-    graph_builder.add_edge("tools", "query_agent")  # loop after tool runs
-    graph_builder.add_edge(START, "query_agent")
-    graph = graph_builder.compile(checkpointer=memory)
+    g = StateGraph(State)
+    g.add_node("query_agent", query_agent)
+    g.add_node("tools", ToolNode(tools=tools))
+    g.add_conditional_edges("query_agent", to_tools_or_end, {"tools": "tools", END: END})
+    g.add_edge("tools", "query_agent")
+    g.add_edge(START, "query_agent")
+
+    graph = g.compile(checkpointer=memory)
     graph.name = "QueryAgentGraph"
     return graph
 
-
-# --- Expose as tool with structured I/O ---
+# ---------- (optional) thin wrapper tool ----------
 class QueryGraphArgs(BaseModel):
-    user_request: str = Field(..., description="Natural-language metric request")
-    retries: int = Field(0, ge=0, le=2, description="How many times the agent may loop")
+    user_request: str = Field(...)
 
 class QueryGraphResult(BaseModel):
-    data: str = Field("", description="Extracted data block (e.g., table or raw output)")
-    insight: str = Field("", description="Narrative insight")
-    tools_used: List[str] = Field(default_factory=list, description="Concrete tools that executed in order")
-    raw_query_result: Union[Dict[str, Any], str, None] = Field(
-        None, description="Unmodified fetch_query_result payload if available"
-    )
+    text: str = Field("")
 
 def _to_state(args: Union[QueryGraphArgs, dict]) -> State:
-    if isinstance(args, dict):
-        user_request = args.get("user_request", "")
-    else:
-        user_request = args.user_request
-    return {"messages": [HumanMessage(content=user_request)]}
+    msg = args["user_request"] if isinstance(args, dict) else args.user_request
+    return {"messages": [HumanMessage(content=msg)]}
 
 def _from_state(st: State) -> QueryGraphResult:
-    # Get last LLM / agent message content
-    text = st["messages"][-1].content if st.get("messages") else ""
+    txt = st["messages"][-1].content if st.get("messages") else ""
+    return QueryGraphResult(text=txt)
 
-    # Extract labeled sections
-    ds_idx = lower.find("data:")
-    insight_idx = lower.find("insight:")
+_pipeline = None
+_query_graph_tool = None
+_init_lock = asyncio.Lock()
 
-    data_block = ""
-    insight_block = ""
+async def make_pipeline(config: Optional[Dict] = None):
+    graph = await build_graph(config)
+    return RunnableLambda(_to_state) | graph | RunnableLambda(_from_state)
 
-    if ds_idx != -1 and insight_idx != -1 and insight_idx > ds_idx:
-        data_block = text[ds_idx + len("data:"):insight_idx].strip()
-        insight_block = text[insight_idx + len("insight:"):].strip()
-    elif ds_idx != -1:
-        data_block = text[ds_idx + len("data:"):].strip()
-    elif insight_idx != -1:
-        insight_block = text[insight_idx + len("insight:"):].strip()
-    else:
-        # fallback: treat entire content as data if no explicit labels
-        data_block = text.strip()
-
-    # Collect which tools actually ran by inspecting tool messages in the state.
-    tools_used = []
-    raw_query_result = None
-    for m in st["messages"]:
-        # ToolNode inserts ToolMessage-like objects; here heuristically look at name/content
-        name = getattr(m, "name", "")
-        if name in {"fetch_metrics", "create_query", "fetch_query_result", "search_dimension_values"}:
-            tools_used.append(name)
-        # Attempt to capture raw fetch_query_result output from tool result in the trace
-        if name == "fetch_query_result":
-            try:
-                # sometimes content is a dict-like or JSON string
-                content = m.content
-                if isinstance(content, str):
-                    # attempt parse
-                    import json as _json
-
-                    try:
-                        parsed = _json.loads(content)
-                        raw_query_result = parsed
-                    except Exception:
-                        raw_query_result = content
-                else:
-                    raw_query_result = content
-            except Exception:
-                pass
-
-    # Deduplicate order-preserving tools_used
-    seen = set()
-    ordered_tools = []
-    for t in tools_used:
-        if t not in seen:
-            ordered_tools.append(t)
-            seen.add(t)
-
-    return QueryGraphResult(
-        data=data_block,
-        insight=insight_block,
-        tools_used=ordered_tools,
-        raw_query_result=raw_query_result,
-    )
-
-pipeline = RunnableLambda(_to_state) | build_graph() | RunnableLambda(_from_state)
-query_graph_tool = pipeline.as_tool(
-    args_schema=QueryGraphArgs,
-    name="run_query_agent_graph",
-    description="Runs the QueryAgentGraph and returns {data, insight, tools_used, raw_query_result}.",
-)
+async def get_query_graph_tool(config: Optional[Dict] = None):
+    global _pipeline, _query_graph_tool
+    if _query_graph_tool is None:
+        async with _init_lock:
+            if _query_graph_tool is None:
+                _pipeline = await make_pipeline(config)
+                _query_graph_tool = _pipeline.as_tool(
+                    args_schema=QueryGraphArgs,
+                    name="run_query_agent_graph",
+                    description="Runs the QueryAgentGraph with a single user message.",
+                )
+    return _query_graph_tool

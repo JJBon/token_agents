@@ -367,7 +367,7 @@ def _recency_weight(dt_iso: str | None, half_life_days: float = 14.0) -> float:
 
 def _src_weight(src: str | None) -> float:
     if not src: return 1.0
-    s = src.strip().lower()
+    s = servers.src.strip().lower()
     return SOURCE_WEIGHTS.get(s, 1.0)
 
 def _polarity_from_text(t: str) -> Tuple[str, float]:

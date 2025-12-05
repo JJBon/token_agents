@@ -1,10 +1,7 @@
 {
   "graphs": {
-    "CryptoPanicScraper": {
-      "path": "news_agent/debug.py:build_graph"
-    },
     "QueryAgentGraph": {
-        "path": "query_agent/graph.py:build_graph"
+        "path": "agents/query_agent/graph.py:build_graph"
     }
   },
   "baseUrl": "http://0.0.0.0:2024",

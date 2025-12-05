@@ -27,8 +27,8 @@ COPY ./docker/langgraph/requirements.txt requirements.txt
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install-deps  
-RUN playwright install chromium
+#RUN playwright install-deps  
+#RUN playwright install chromium
 
 # Replace adapter_backed_client.py with custom version
 COPY ./docker/spark/spark-utils/adapter_backed_client.py \
@@ -37,9 +37,17 @@ COPY ./docker/spark/spark-utils/adapter_backed_client.py \
 # Copy application code
 COPY ./docker/langgraph/app/ .
 
+#RUN python -c "import service; from service import FeedbackAgentService; FeedbackAgentService(); print('Service import OK')"
+
+RUN bentoml build
+
+
 # Set environment variables (can be overridden at runtime)
 ENV AWS_REGION=us-east-1
 ENV PYTHONUNBUFFERED=1
 
+
 # Run the app
-CMD ["python", "app.py"]
+CMD ["bentoml", "serve", "feedback_agent_service:latest", "--host", "0.0.0.0", "--port", "8000"]
+#CMD ["uvicorn", "servers.medium:app", "--host", "0.0.0.0", "--port", "8000"]
+#CMD ["langgraph", "dev", "--host", "0.0.0.0", "--config", "/app/agents/langgraph.json"]

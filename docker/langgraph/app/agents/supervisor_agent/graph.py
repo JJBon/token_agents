@@ -16,8 +16,10 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 
 from prompts.prompts import supervisor_agent_system_prompt
-from agents.query_agent.graph import query_graph_tool
-from coin_gecko import lf_handler  # tracing callback
+from agents.query_agent.graph import get_query_graph_tool 
+from langfuse.langchain import CallbackHandler
+lf_handler = CallbackHandler()
+
 
 # === LLM for supervisor judgment ===
 bedrock = boto3.client("bedrock-runtime", region_name="us-east-1")
@@ -172,7 +174,8 @@ async def call_query_agent_node(state: State, config: RunnableConfig):
         inner_cfg["callbacks"] = existing_cbs
 
     try:
-        tool_out = await query_graph_tool.ainvoke(
+        tool = await get_query_graph_tool(config=None)
+        tool_out = await tool.ainvoke(
             {"user_request": user_req, "retries": 0},
             config=inner_cfg,
         )

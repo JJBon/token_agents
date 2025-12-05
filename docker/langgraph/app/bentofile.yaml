@@ -1,0 +1,20 @@
+service: "service:FeedbackAgentService"
+labels:
+  owner: "juan"
+  project: "langgraph-feedback-agent"
+
+include:
+  - "service.py"
+  - "agents/conversation_agent/**"
+  - "servers/src/variables.py"
+  - "prompts/**"
+
+python:
+  packages:
+    - bentoml
+    - langgraph
+    - langchain-core
+    - langchain-openai
+    - langchain-ollama
+    - anyio
+    - uvicorn

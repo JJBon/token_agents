@@ -78,6 +78,7 @@ nohup spark-submit --deploy-mode client --master local[*] --driver-memory 8g --e
  --conf spark.sql.catalog.glue_catalog.cache-enabled=true \
  --conf spark.sql.catalog.spark_catalog.cache-enabled=true \
  --conf spark.sql.legacy.allowNonEmptyLocationInCTAS=true \
+ --conf spark.sql.legacy.setCommandRejectsSparkCoreConfs=false \
   >> "$THRIFT_SERVER_LOG" 2>&1 &
 
  #--conf spark.sql.legacy.timeParserPolicy=LEGACY \

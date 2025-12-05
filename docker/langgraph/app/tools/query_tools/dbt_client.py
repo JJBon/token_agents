@@ -2,18 +2,25 @@ import logging
 import os
 import json
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Literal, Dict
 from pydantic import BaseModel, Field
 from enum import Enum
 import difflib
-
 import re
 
+# ---------- Output cleaning helpers ----------
+ANSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")  # strip ANSI
+SPINNER_PREFIXES = ("⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏")
+NOISE_STARTS = (
+    "‼️ Warning:", "💡 Please update", "✔ Success", "Initiating query", "written query",
+)
+DASH_LINE_RE = re.compile(r"^\s*-{2,}(?:\s+-{2,})+\s*$")  # lines of ----  ---- ...
+COL_SPLIT_RE = re.compile(r"\s{2,}")  # split on 2+ spaces
 
 logger = logging.getLogger(__name__)
 
+# ---------- Models ----------
 class DimensionSearchInput(BaseModel):
     dimension: str = Field(..., description="The dimension to search in (e.g., token_day__coin_name).")
     query: str = Field(..., description="The partial query string to match (e.g., BTC).")
@@ -24,11 +31,11 @@ class Logic(str, Enum):
     AND = "AND"
     OR = "OR"
 
+
 class TimeAggregation(str, Enum):
     day = "day"
     week = "week"
     month = "month"
-
 
 
 class DimensionType(str, Enum):
@@ -37,9 +44,7 @@ class DimensionType(str, Enum):
 
 
 class GroupByField(BaseModel):
-    """
-    Represents a single group-by field, preserving the order across time and dimension fields.
-    """
+    """Represents a single group-by field, preserving the order across time and dimension fields."""
     type: DimensionType = Field(..., description="Either 'time' or 'dimension'.")
     dimension: str = Field(..., description="The name of the dimension.")
     aggregation: Optional[TimeAggregation] = Field(
@@ -50,7 +55,113 @@ class GroupByField(BaseModel):
         if self.type == DimensionType.TIME and self.aggregation:
             return f"{self.dimension}__{self.aggregation.value}"
         return self.dimension
-    
+
+
+class Grouping(BaseModel):
+    """Wraps group-by fields and exposes the resolved dimension names."""
+    items: List[GroupByField] = Field(default_factory=list)
+
+    @property
+    def dims(self) -> set[str]:
+        return {g.to_expression() for g in self.items}
+
+    def contains(self, dim: str) -> bool:
+        return dim in self.dims
+
+
+class OrderDirection(str, Enum):
+    ASC = "ASC"
+    DESC = "DESC"
+
+
+class OrderTarget(str, Enum):
+    METRIC = "metric"
+    DIMENSION = "dimension"   # includes time grains like metric_time__week
+
+
+class OrderByField(BaseModel):
+    """
+    ORDER BY spec that supports +/- shorthand and enforces dimension vs metric.
+    Accepts:
+      "+average_price_usd"
+      "-average_market_cap_usd"
+      "+token_day__coin_name"
+      "-metric_time__week"
+      "average_price_usd DESC"
+      "token_day__coin_name ASC"
+    """
+    target: OrderTarget = Field(..., description="'metric' or 'dimension'")
+    name: str = Field(..., description="Metric or dimension name (already grain-applied if time).")
+    direction: OrderDirection = Field(OrderDirection.DESC)
+
+    def to_expression(self) -> str:
+        return f"{self.name} {self.direction.value}"
+
+    def to_metricflow_token(self) -> str:
+        # MetricFlow CLI expects +/- prefix, not ASC/DESC
+        sign = "+" if self.direction == OrderDirection.ASC else "-"
+        return f"{sign}{self.name}"
+
+    @classmethod
+    def parse(cls, raw: str, *, metrics: list[str], dimensions: dict[str, dict]) -> "OrderByField":
+        s = (raw or "").strip()
+
+        # detect +/- shorthand
+        direction = None
+        if s.startswith("+"):
+            direction = OrderDirection.ASC
+            s = s[1:].strip()
+        elif s.startswith("-"):
+            direction = OrderDirection.DESC
+            s = s[1:].strip()
+
+        # detect explicit ASC/DESC suffix
+        parts = s.split()
+        if len(parts) >= 2 and parts[-1].upper() in ("ASC", "DESC"):
+            direction = OrderDirection(parts[-1].upper())
+            name = " ".join(parts[:-1]).strip()
+        else:
+            name = s
+
+        # default direction if none specified
+        direction = direction or OrderDirection.DESC
+
+        # classify target
+        if name in metrics:
+            tgt = OrderTarget.METRIC
+        elif name in dimensions:  # includes metric_time__week/month etc. if present in dimensions map
+            tgt = OrderTarget.DIMENSION
+        else:
+            # best effort: if it looks like time grain or contains '__', treat as dimension
+            tgt = OrderTarget.DIMENSION if "__" in name or name.startswith("metric_time") else OrderTarget.METRIC
+
+        return cls(target=tgt, name=name, direction=direction)
+
+
+class OrderSpec(BaseModel):
+    """Base class for structured order specs (not required by the CLI path, kept for extensibility)."""
+    direction: OrderDirection = OrderDirection.DESC
+
+    def to_expression(self) -> str:
+        raise NotImplementedError
+
+
+class MetricOrderBy(OrderSpec):
+    kind: Literal["metric"] = "metric"
+    name: str
+
+    def to_expression(self) -> str:
+        return f"{self.name} {self.direction.value}"
+
+
+class DimensionOrderBy(OrderSpec):
+    kind: Literal["dimension"] = "dimension"
+    dimension: str
+
+    def to_expression(self) -> str:
+        return f"{self.dimension} {self.direction.value}"
+
+
 class FilterField(BaseModel):
     type: DimensionType = Field(..., description="Type of dimension: time or regular dimension.")
     dimension: str = Field(..., description="Dimension to filter.")
@@ -80,15 +191,12 @@ class TimeDimension(BaseModel):
 
     @classmethod
     def is_valid_time_dimension(cls, dim: str) -> bool:
-        # Define known time grains (you can expand this list)
         time_grains = ["metric_time__day", "metric_time__week", "metric_time__month", "metric_time__quarter", "metric_time__year"]
         return dim in time_grains
 
 
 class Condition(BaseModel):
-    """
-    Represents a single condition expression, e.g., "metric_time__week <= current_date".
-    """
+    """Represents a single condition expression, e.g., \"metric_time__week <= current_date\"."""
     expr: str
 
 
@@ -108,12 +216,11 @@ class WhereCondition(BaseModel):
         return f" {self.logic.value} ".join(parts)
 
 
-
-
 class CreateQueryInput(BaseModel):
     metrics: List[str] = Field(..., description="Metrics to query.")
     group_by: Optional[List[GroupByField]] = None
-    order_by: Optional[List[str]] = None
+    # accept either structured OrderByField or raw strings (back-compat)
+    order_by: Optional[List[Union[OrderByField, str]]] = None
     limit: Optional[int] = 5
     where: Optional[WhereCondition] = None
 
@@ -125,6 +232,23 @@ class CreateQueryInput(BaseModel):
     def where_clause(self) -> Optional[str]:
         return self.where.to_where_clause() if self.where else None
 
+    def order_by_tokens(
+        self,
+        *,
+        known_metrics: List[str],
+        known_dimensions: Dict[str, dict],
+    ) -> List[str]:
+        """
+        Normalize order_by to MetricFlow tokens: ['+token_day__coin_name', '-average_price_usd'].
+        Accepts raw strings ('-metric', 'dimension ASC') or OrderByField objects.
+        """
+        specs: List[OrderByField] = []
+        for ob in self.order_by or []:
+            if isinstance(ob, OrderByField):
+                specs.append(ob)
+            else:
+                specs.append(OrderByField.parse(ob, metrics=known_metrics, dimensions=known_dimensions))
+        return [spec.to_metricflow_token() for spec in specs]
 
 
 class CreateQueryResponse(BaseModel):
@@ -139,6 +263,7 @@ class FetchResultsResponse(BaseModel):
     error: Optional[str] = Field(default=None, description="Error message if status=ERROR.")
 
 
+# ---------- DBT client ----------
 class DBTCoreClient:
     def __init__(self):
         self.project_dir = os.environ["DBT_PROJECT_PATH"]
@@ -154,9 +279,7 @@ class DBTCoreClient:
         if self._metrics_cache is None:
             self._start_background_cache_loading()
 
-    # ---------------------
-    # Cache Management
-    # ---------------------
+    # --------------------- Cache Management ---------------------
     def _try_load_metrics_from_file(self):
         if os.path.exists(self.metrics_cache_file):
             try:
@@ -193,9 +316,7 @@ class DBTCoreClient:
             with self._cache_lock:
                 self._cache_loading = False
 
-    # ---------------------
-    # Metrics/Dimensions Fetching
-    # ---------------------
+    # --------------------- Metrics/Dimensions Fetching ---------------------
     def _build_metrics_cache(self):
         logging.info("Building metrics cache...")
         metrics_from_ls = self._get_all_metrics_info()
@@ -244,9 +365,7 @@ class DBTCoreClient:
             return []
         return [line.replace("• ", "").strip() for line in result.stdout.splitlines() if line.startswith("• ")]
 
-    # ---------------------
-    # Dimension Values (Cached + Filtered)
-    # ---------------------
+    # --------------------- Dimension Values (Cached + Filtered) ---------------------
     def _build_dimension_values_cache(self):
         """Build and store dimension values cache for all dimensions."""
         logging.info("Building dimension values cache...")
@@ -298,9 +417,7 @@ class DBTCoreClient:
         matches = self.fetch_dimension_values_filtered(dimension, query, max_results)
         return {"dimension": dimension, "query": query, "matches": matches}
 
-    # ---------------------
-    # Public API
-    # ---------------------
+    # --------------------- Public API ---------------------
     def fetchMetrics(self):
         return self._metrics_cache or {"metrics": [], "dimensions": {}}
 
@@ -313,139 +430,144 @@ class DBTCoreClient:
 
     def createQuery(self, query_params: CreateQueryInput) -> CreateQueryResponse:
         """
-        Validate metrics, group_by, and where clauses using metrics+dimensions cache.
-        Uses cached dimension values for validation instead of full fetch.
+        Validate metrics, group_by, where, and order_by using metrics+dimensions cache.
+        Normalizes order_by to MetricFlow tokens: ['+dimension', '-metric'].
+        Enforces: any ORDER BY dimension must appear in GROUP BY.
         """
         if self._metrics_cache is None:
             self._try_load_metrics_from_file()
 
-        metrics = [m["name"] for m in self._metrics_cache.get("metrics", [])]
+        # --- Known catalog ---
+        known_metrics = [m["name"] for m in self._metrics_cache.get("metrics", [])]
+        known_dimensions: Dict[str, dict] = self._metrics_cache.get("dimensions", {})
+
+        # --- Validate metrics ---
         for m in query_params.metrics:
-            if m not in metrics:
+            if m not in known_metrics:
                 return CreateQueryResponse(
                     status="ERROR",
                     query=query_params.dict(),
                     error=f"Metric '{m}' is not defined."
                 )
 
-        dimensions = self._metrics_cache.get("dimensions", {})
-        for gb in query_params.group_by or []:
-            if gb.dimension not in dimensions:
+        # --- Validate group_by dimensions exist ---
+        for gb in (query_params.group_by or []):
+            if gb.dimension not in known_dimensions:
                 return CreateQueryResponse(
                     status="ERROR",
                     query=query_params.dict(),
                     error=f"Dimension '{gb.dimension}' is not available."
                 )
 
+        # --- Validate WHERE clauses (dimension existence + optional value hinting) ---
         if query_params.where:
             for cond in query_params.where.conditions:
                 if isinstance(cond, FilterField):
-                    if cond.dimension not in dimensions:
+                    if cond.dimension not in known_dimensions:
                         return CreateQueryResponse(
                             status="ERROR",
                             query=query_params.dict(),
                             error=f"Dimension '{cond.dimension}' is not available."
                         )
-
-                    valid_values = self.fetch_dimension_values_filtered(
-                        cond.dimension, cond.value, max_results=20
-                    )
-
-                    if valid_values and cond.value not in valid_values:
+                    candidates = self.fetch_dimension_values_filtered(cond.dimension, cond.value, max_results=20)
+                    if candidates and cond.value not in candidates:
                         return CreateQueryResponse(
                             status="ERROR",
                             query=query_params.dict(),
                             error=(
                                 f"Invalid value '{cond.value}' for dimension '{cond.dimension}'. "
-                                f"Did you mean: {valid_values[:5]} ?"
+                                f"Did you mean: {candidates[:5]} ?"
                             )
                         )
 
+        # --- Normalize and validate ORDER BY ---
+        normalized_order_tokens: List[str] = []
+        try:
+            specs: List[OrderByField] = []
+            for ob in (query_params.order_by or []):
+                specs.append(
+                    ob if isinstance(ob, OrderByField)
+                    else OrderByField.parse(ob, metrics=known_metrics, dimensions=known_dimensions)
+                )
+
+            # Enforce: ORDER BY dimensions must be ⊆ GROUP BY
+            group_set = set(query_params.group_by_expressions)  # resolved names incl. time grains
+            missing_dims = [
+                s.name for s in specs
+                if s.target == OrderTarget.DIMENSION and s.name not in group_set
+            ]
+            if missing_dims:
+                return CreateQueryResponse(
+                    status="ERROR",
+                    query=query_params.dict(),
+                    error=(
+                        f"ORDER BY dimension(s) {missing_dims} must appear in GROUP BY. "
+                        f"Current GROUP BY: {sorted(group_set) or '[]'}"
+                    )
+                )
+
+            normalized_order_tokens = [s.to_metricflow_token() for s in specs]
+        except Exception as e:
+            return CreateQueryResponse(
+                status="ERROR",
+                query=query_params.dict(),
+                error=f"Invalid order_by: {e}"
+            )
+
+        # --- Success: return normalized query dict ---
         query_dict = query_params.dict()
+        if normalized_order_tokens:
+            query_dict["order_by"] = normalized_order_tokens  # e.g. ['+metric_time__week', '-average_price_usd']
+
         return CreateQueryResponse(status="CREATED", query=query_dict)
 
-    #######################################
-    # Instead of referencing a stored queryId,
-    # we run the query from the provided dict
-    #######################################
+    # --------------------- MetricFlow execution ---------------------
+    def parse_metricflow_table(self, raw_output: str) -> list[dict]:
+        text = ANSI_RE.sub("", raw_output or "")
 
-    import re
+        clean = []
+        for line in text.splitlines():
+            s = line.rstrip()
+            if not s:
+                continue
+            if s.lstrip().startswith(SPINNER_PREFIXES):
+                continue
+            if any(s.startswith(prefix) for prefix in NOISE_STARTS):
+                continue
+            if re.match(r"^\[\d{2}:\d{2}:\d{2}\]", s.strip()):
+                continue
+            clean.append(s)
 
-    def parse_metricflow_table(self,raw_output: str) -> list[dict]:
-        """
-        Parse space-aligned MetricFlow table output like:
-
-            metric_time__month      max_price_volatility_all_coins    min_price_volatility_all_coins ...
-            --------------------    ------------------------------     -------------------------------
-            2024-03-01T00:00:00     0.119452                          0.0220735
-            ...
-
-        Returns a list of dict rows, e.g.:
-        [
-        {
-            "metric_time__month": "2024-03-01T00:00:00",
-            "max_price_volatility_all_coins": "0.119452",
-            "min_price_volatility_all_coins": "0.0220735",
-            ...
-        },
-        ...
-        ]
-        """
-        lines = raw_output.strip().split("\n")
-
-        # 1) Strip out spinner/log lines, e.g. containing “✔” or “Success” or “Initiating query”:
-        #    (Adjust as needed)
-        data_lines = [
-            line for line in lines
-            if line and not any(sub in line for sub in ["⠋", "✔", "🖨", "Initiating query", "Success", "written query"])
-        ]
-
-        # 2) If there’s nothing left, return empty
-        if not data_lines:
+        if not clean:
             return []
 
-        # The first non-dashed line should be the header (e.g. "metric_time__month      max_price...")
-        header_line = data_lines[0]
-
-        # The second line is usually the dashed "----" line. We can skip it:
-        #   --------------------  ------------------------------  ...
-        #   But let's be robust in case sometimes there's no dashed line.
-        #   We'll look for the first "----" line in data_lines.
-        dashed_line_idx = None
-        for idx, line in enumerate(data_lines):
-            if re.match(r"^\s*-+\s*-+\s*", line):
-                dashed_line_idx = idx
+        # find header followed by dashed ruler
+        header_idx = None
+        for i in range(len(clean) - 1):
+            if DASH_LINE_RE.match(clean[i + 1].strip()):
+                header_idx = i
                 break
+        if header_idx is None:
+            header_idx = 0
 
-        # If we found a dashed line, the data lines start after that line
-        data_start_idx = dashed_line_idx + 1 if dashed_line_idx is not None else 1
+        header_cols = COL_SPLIT_RE.split(clean[header_idx].strip())
+        data_start = header_idx + 2 if header_idx + 1 < len(clean) and DASH_LINE_RE.match(clean[header_idx + 1].strip()) else header_idx + 1
 
-        # 3) Split the header line on 2+ spaces to get column names
-        #    e.g. "metric_time__month      max_price_volatility_all_coins" -> columns
-        header_cols = re.split(r"\s{2,}", header_line.strip())
-
-        # 4) For each subsequent line, split on 2+ spaces and map to the corresponding column
-        table_rows = []
-        for line in data_lines[data_start_idx:]:
-            # If it's another dashed line or blank, skip
-            if re.match(r"^\s*-+\s*$", line):
+        rows = []
+        for line in clean[data_start:]:
+            if DASH_LINE_RE.match(line.strip()):
                 continue
-
-            cols = re.split(r"\s{2,}", line.strip())
-
-            # If the line doesn't have the same number of columns as the header,
-            # skip or handle gracefully
-            if len(cols) != len(header_cols):
+            cols = COL_SPLIT_RE.split(line.strip())
+            if not cols:
                 continue
+            if len(cols) < len(header_cols):
+                cols += [""] * (len(header_cols) - len(cols))
+            elif len(cols) > len(header_cols):
+                cols = cols[:len(header_cols)]
+            rows.append(dict(zip(header_cols, cols)))
 
-            row_dict = {}
-            for col_name, value in zip(header_cols, cols):
-                row_dict[col_name] = value
+        return rows
 
-            table_rows.append(row_dict)
-
-        return table_rows
-    
     def run_query_from_dict(self, query_dict: CreateQueryInput) -> FetchResultsResponse:
         """
         Executes a MetricFlow query using the given CreateQueryInput.
@@ -454,10 +576,8 @@ class DBTCoreClient:
         metrics_list = query_dict.metrics
         group_bys = query_dict.group_by_expressions
         limit_value = query_dict.limit
-        order_by = query_dict.order_by or []
         where_clause = query_dict.where_clause
 
-        # 1. Validate metrics
         if not metrics_list:
             return FetchResultsResponse(
                 status="ERROR",
@@ -465,26 +585,51 @@ class DBTCoreClient:
                 error="No metrics provided."
             )
 
-        # 2. Build MetricFlow CLI command
-        command = ["mf", "query"]
-        command.extend(["--metrics", ",".join(metrics_list)])
+        # Normalize order tokens + enforce subset rule again (in case called directly)
+        order_tokens: List[str] = []
+        try:
+            cache_metrics = [m["name"] for m in self._metrics_cache.get("metrics", [])]
+            cache_dims: Dict[str, dict] = self._metrics_cache.get("dimensions", {})
 
+            specs: List[OrderByField] = []
+            for ob in (query_dict.order_by or []):
+                specs.append(
+                    ob if isinstance(ob, OrderByField)
+                    else OrderByField.parse(ob, metrics=cache_metrics, dimensions=cache_dims)
+                )
+
+            gb_set = set(group_bys)
+            missing = [s.name for s in specs if s.target == OrderTarget.DIMENSION and s.name not in gb_set]
+            if missing:
+                return FetchResultsResponse(
+                    status="ERROR",
+                    results="No results due to invalid ORDER BY.",
+                    error=(f"ORDER BY dimension(s) {missing} must appear in GROUP BY. "
+                           f"Current GROUP BY: {sorted(gb_set) or '[]'}")
+                )
+
+            order_tokens = [s.to_metricflow_token() for s in specs]   # '+/- field' as MetricFlow expects
+        except Exception as e:
+            return FetchResultsResponse(
+                status="ERROR",
+                results="No results due to invalid ORDER BY.",
+                error=str(e)
+            )
+
+        # Build CLI
+        command = ["mf", "query", "--metrics", ",".join(metrics_list)]
         if group_bys:
             command.extend(["--group-by", ",".join(group_bys)])
-
-        if order_by:
-            command.extend(["--order", ",".join(order_by)])
-
+        if order_tokens:
+            command.extend(["--order", ",".join(order_tokens)])  # tokens, not ASC/DESC
         if where_clause:
-            # Enclose WHERE clause in single quotes to avoid shell interpretation issues
             command.extend(["--where", where_clause])
-
         if limit_value is not None:
             command.extend(["--limit", str(limit_value)])
 
         logging.info(f"Running MetricFlow query: {' '.join(command)}")
 
-        # 3. Execute the query
+        # Execute
         try:
             result = subprocess.run(
                 command,
@@ -497,8 +642,8 @@ class DBTCoreClient:
             if result.returncode != 0:
                 return FetchResultsResponse(
                     status="ERROR",
-                    results="No results due to query failure.",
-                    error=f"MetricFlow failed with code {result.returncode}: {result.stderr}"
+                    results=f"No results due to query failure. Query is {command}",
+                    error=f"MetricFlow failed with code {result.returncode}: {result.stderr}, logs: {result.stdout}"
                 )
 
             parsed_rows = self.parse_metricflow_table(result.stdout)
@@ -506,7 +651,7 @@ class DBTCoreClient:
             if not parsed_rows:
                 return FetchResultsResponse(
                     status="SUCCESSFUL",
-                    results="No rows returned by the query.",
+                    results=f"No rows returned by the query. logs: {result.stdout}",
                     error=None
                 )
 
@@ -514,7 +659,7 @@ class DBTCoreClient:
             header = list(parsed_rows[0].keys())
             table = "| " + " | ".join(header) + " |\n"
             table += "| " + " | ".join("---" for _ in header) + " |\n"
-            for row in parsed_rows[:10]:  # Top 10 rows
+            for row in parsed_rows[:10]:
                 table += "| " + " | ".join(str(row.get(col, "")) for col in header) + " |\n"
 
             return FetchResultsResponse(

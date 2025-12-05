@@ -25,3 +25,6 @@ scrapegraphai
 trafilatura
 readability-lxml
 lxml_html_clean
+langgraph-cli[inmem]
+langgraph_openai_serve
+bentoml

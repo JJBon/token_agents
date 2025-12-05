@@ -20,7 +20,17 @@ semantic_models:
         type: categorical
       - name: market_cap_usd_bucket
         type: categorical
-        expr: market_cap_usd_bucket
+        config:
+          meta:
+            ordinal: true 
+            order: ["Very Low Cap","Low Cap","Mid Cap","High Cap"]
+        expr: |
+          CASE
+            WHEN market_cap <  50000000 THEN 'Very Low Cap'
+            WHEN market_cap < 500000000 THEN 'Low Cap'
+            WHEN market_cap < 5000000000 THEN 'Mid Cap'
+            ELSE 'High Cap'
+          END
     measures:
       - name: current_price_usd
         agg: average

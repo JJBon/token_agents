@@ -5,7 +5,7 @@ coin_spark:
       method: thrift
       host: spark-master
       port: 10001 
-      schema: agentic
+      schema: coingecko
       threads: "{{ env_var('DBT_THREADS', 4) }}"
       use_ssl: false
     dev-mcp-server:
@@ -13,8 +13,8 @@ coin_spark:
       method: thrift
       host: spark-master
       port: 10001 
-      schema: agentic
-      database: agentic
+      schema: coingecko
+      database: coingecko
       threads: "{{ env_var('DBT_THREADS', 4) }}"
       use_ssl: false
       meta: 
